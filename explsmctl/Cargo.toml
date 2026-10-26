@@ -1,0 +1,15 @@
+[package]
+name = "explsmctl"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+explsm-common.workspace = true
+explsm-ipc.workspace = true
+explsm-policy.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+zbus.workspace = true
