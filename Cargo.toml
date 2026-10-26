@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["explsm-common"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+aya = "0.14.0"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+explsm-common = { path = "explsm-common" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt", "signal", "sync", "time"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
