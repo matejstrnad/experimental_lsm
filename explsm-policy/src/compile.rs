@@ -6,8 +6,8 @@ use std::{
 };
 
 use explsm_common::{
-    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, GrantKey, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY,
-    OWNER_PINS, SUBJECT_TERMINAL, perm,
+    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MODE_AUDIT, MODE_ENFORCE,
+    OWNER_ANY, OWNER_PINS, SUBJECT_TERMINAL, app_flag, perm,
 };
 
 use crate::{
@@ -200,6 +200,64 @@ pub struct App {
     pub mode: Mode,
     pub exes: Vec<PathPat>,
     pub roots: Vec<PathPat>,
+    /// `inherit`: processes keep the identity across execs of exes that are
+    /// no app.
+    pub inherit: bool,
+    /// `env`: loader variables, as `NAME=VALUE`, that keep the identity.
+    pub env: Vec<String>,
+}
+
+impl App {
+    /// Value of the `APP_FLAGS` map.
+    pub fn flags(&self) -> u32 {
+        if self.inherit { app_flag::INHERIT } else { 0 }
+    }
+}
+
+/// The variables the exec hook looks at; only these can be allowed by `env`.
+pub const LOADER_VARS: [&str; 3] = ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"];
+
+/// The paths in the value of an `env` string (`NAME=VALUE`): the loader
+/// separates them by `:`, and also by spaces and `;` in some variables.
+pub fn env_paths(var: &str) -> impl Iterator<Item = &str> {
+    let value = var.split_once('=').map_or("", |(_, v)| v);
+    value.split([':', ';', ' '])
+}
+
+fn check_env(var: &Spanned<String>) -> Result<(), Diagnostic> {
+    let err = |msg: String| Diagnostic::error(var.span, msg);
+    let Some((name, value)) = var.value.split_once('=') else {
+        return Err(err("an `env` string is `NAME=VALUE`".into()));
+    };
+    if !LOADER_VARS.contains(&name) {
+        return Err(err(format!("`{name}` is no loader variable"))
+            .note("only LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT drop an identity, so only \
+                   they can be allowed"));
+    }
+    if value.is_empty() {
+        return Err(err(format!("`{name}` has no value")));
+    }
+    // The exec hook reads the string with its NUL in one chunk.
+    if var.value.len() + 1 >= ENV_CHUNK {
+        return Err(err(format!("`env` strings have at most {} bytes", ENV_CHUNK - 2)));
+    }
+    for path in env_paths(&var.value) {
+        let p = Path::new(path);
+        if path.is_empty() {
+            return Err(err("an empty entry means the current directory".into())
+                .note("the loader would look in whatever directory the app runs in"));
+        }
+        if path.contains('$') {
+            return Err(err(format!("`{path}`: `$ORIGIN` and the like are not supported")));
+        }
+        if !p.is_absolute()
+            || p.components()
+                .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+        {
+            return Err(err(format!("`{path}` is not an absolute path without `.` and `..`")));
+        }
+    }
+    Ok(())
 }
 
 /// A checked policy.
@@ -236,6 +294,24 @@ impl Compiled {
                 id,
                 self.app(id).map_or(MODE_AUDIT, |a| a.mode.map_value()),
             )
+        })
+    }
+
+    /// App id → value of the `APP_FLAGS` map, for every id ever assigned.
+    /// Apps that were removed have none.
+    pub fn app_flags(&self) -> impl Iterator<Item = (AppId, u32)> + '_ {
+        self.ids.ids().map(|id| (id, self.app(id).map_or(0, App::flags)))
+    }
+
+    /// Keys of the `ALLOWED_ENV` map: every app's `env` strings.
+    pub fn allowed_env(&self) -> impl Iterator<Item = EnvKey> + '_ {
+        self.apps.iter().flat_map(|a| {
+            a.env.iter().map(|var| {
+                let mut val = [0; ENV_CHUNK];
+                // check_env keeps them shorter than a chunk.
+                val[..var.len()].copy_from_slice(var.as_bytes());
+                EnvKey { app: a.id, val }
+            })
         })
     }
 }
@@ -484,6 +560,22 @@ fn compile_app<'a>(
             ),
         }
     }
+    for (i, span) in a.inherit.iter().enumerate() {
+        if i > 0 {
+            diags.push(
+                Diagnostic::error(*span, format!("app {name} has more than one `inherit`"))
+                    .also(a.inherit[0], "first set here"),
+            );
+        }
+    }
+    let mut env = Vec::new();
+    for var in &a.env {
+        match check_env(var) {
+            Ok(()) if !env.contains(&var.value) => env.push(var.value.clone()),
+            Ok(()) => {}
+            Err(d) => diags.push(d),
+        }
+    }
     if diags.len() > before {
         return None;
     }
@@ -500,6 +592,8 @@ fn compile_app<'a>(
         mode,
         exes,
         roots,
+        inherit: !a.inherit.is_empty(),
+        env,
     })
 }
 
@@ -666,6 +760,33 @@ mod tests {
             ["app a has more than one `mode`"]
         );
         assert_eq!(
+            errors("app a { exe \"/a\" inherit inherit }"),
+            ["app a has more than one `inherit`"]
+        );
+        let env = |v: &str| errors(&format!("app a {{ exe \"/a\" env \"{v}\" }}"));
+        assert_eq!(env("LD_PRELOAD"), ["an `env` string is `NAME=VALUE`"]);
+        assert_eq!(env("PATH=/bin"), ["`PATH` is no loader variable"]);
+        assert_eq!(env("LD_AUDIT="), ["`LD_AUDIT` has no value"]);
+        assert_eq!(
+            env("LD_LIBRARY_PATH=/a::/b"),
+            ["an empty entry means the current directory"]
+        );
+        assert_eq!(
+            env("LD_LIBRARY_PATH=$ORIGIN/lib"),
+            ["`$ORIGIN/lib`: `$ORIGIN` and the like are not supported"]
+        );
+        assert_eq!(
+            env("LD_PRELOAD=lib.so"),
+            ["`lib.so` is not an absolute path without `.` and `..`"]
+        );
+        assert_eq!(
+            env("LD_PRELOAD=/a/../b.so"),
+            ["`/a/../b.so` is not an absolute path without `.` and `..`"]
+        );
+        let long = format!("LD_PRELOAD=/{}", "a".repeat(115));
+        assert_eq!(long.len(), 127);
+        assert_eq!(env(&long), ["`env` strings have at most 126 bytes"]);
+        assert_eq!(
             errors("root_bypass on\nroot_bypass off\nusers a\nusers b"),
             ["`root_bypass` is set twice", "`users` is given twice"]
         );
@@ -681,6 +802,33 @@ mod tests {
             ["the owner of a grant must be an app or `*`"]
         );
         assert_eq!(grant("a read to a"), ["a already owns its data"]);
+    }
+
+    #[test]
+    fn inherit_and_env() {
+        let c = compiled(
+            r#"app a {
+                exe "/opt/a/a"
+                inherit
+                env "LD_PRELOAD=/usr/lib/x.so /usr/lib/y.so", "LD_LIBRARY_PATH=/opt/a/lib:/opt/a/lib64"
+                env "LD_PRELOAD=/usr/lib/x.so /usr/lib/y.so"
+            }
+            app b { exe "/b" }"#,
+        );
+        assert!(c.apps[0].inherit);
+        assert_eq!(c.apps[0].flags(), app_flag::INHERIT);
+        assert_eq!(c.apps[0].env.len(), 2);
+        let paths: Vec<_> = env_paths(&c.apps[0].env[1]).collect();
+        assert_eq!(paths, ["/opt/a/lib", "/opt/a/lib64"]);
+        assert!(!c.apps[1].inherit && c.apps[1].env.is_empty());
+        assert_eq!(c.apps[1].flags(), 0);
+        let flags: Vec<_> = c.app_flags().collect();
+        assert_eq!(flags, [(1, app_flag::INHERIT), (2, 0)]);
+        let keys: Vec<_> = c.allowed_env().collect();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].app, 1);
+        assert_eq!(&keys[1].val[..16], b"LD_LIBRARY_PATH=");
+        assert_eq!(keys[1].val[39..], [0; ENV_CHUNK - 39]);
     }
 
     #[test]

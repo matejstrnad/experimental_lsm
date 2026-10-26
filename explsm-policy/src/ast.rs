@@ -37,6 +37,10 @@ pub struct App {
     pub owns: Vec<Spanned<String>>,
     /// Every `mode` line, so duplicates can be reported.
     pub modes: Vec<Spanned<String>>,
+    /// Every `inherit` line, so duplicates can be reported.
+    pub inherit: Vec<Span>,
+    /// `env "NAME=VALUE", …`: loader variables that keep the identity.
+    pub env: Vec<Spanned<String>>,
 }
 
 #[derive(Debug)]

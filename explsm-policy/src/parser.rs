@@ -10,7 +10,8 @@ use crate::{
 
 const TOP_LEVEL: [&str; 6] = ["app", "grant", "claim", "terminal", "root_bypass", "users"];
 const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `root_bypass` or `users`";
-const APP_BODY: [&str; 3] = ["exe", "owns", "mode"];
+const APP_BODY: [&str; 5] = ["exe", "owns", "mode", "inherit", "env"];
+const EXPECTED_APP: &str = "`exe`, `owns`, `mode`, `inherit`, `env` or `}`";
 
 /// Parse every file into one policy. Fails if any diagnostic is an error.
 pub fn parse(sources: &Sources) -> Result<Policy, Vec<Diagnostic>> {
@@ -212,6 +213,8 @@ impl Parser {
             exes: Vec::new(),
             owns: Vec::new(),
             modes: Vec::new(),
+            inherit: Vec::new(),
+            env: Vec::new(),
         };
         loop {
             if self.eat(&Tok::RBrace) {
@@ -241,7 +244,7 @@ impl Parser {
     }
 
     fn app_line(&mut self, app: &mut App) -> PResult<()> {
-        let kw = self.word("`exe`, `owns`, `mode` or `}`")?;
+        let kw = self.word(EXPECTED_APP)?;
         match kw.value.as_str() {
             "exe" => {
                 let exes = self.list(|p| {
@@ -261,9 +264,14 @@ impl Parser {
                 app.owns.extend(paths);
             }
             "mode" => app.modes.push(self.word("`audit` or `enforce`")?),
+            "inherit" => app.inherit.push(kw.span),
+            "env" => {
+                let vars = self.list(|p| p.string("a `NAME=VALUE` string"))?;
+                app.env.extend(vars);
+            }
             _ => {
                 self.pos -= 1;
-                return Err(self.unexpected("`exe`, `owns`, `mode` or `}`"));
+                return Err(self.unexpected(EXPECTED_APP));
             }
         }
         Ok(())
@@ -338,6 +346,8 @@ mod tests {
                 exe "/usr/bin/node" script "*/cli.js", "~/.local/share/claude/versions/*"
                 owns "~/.claude", "~/.claude.json"
                 mode audit
+                inherit
+                env "LD_PRELOAD=/usr/lib/libx.so", "LD_LIBRARY_PATH=/opt/a/lib"
             }
             grant backup read to claude
             grant @unconfined read, list to *
@@ -358,6 +368,8 @@ mod tests {
         assert_eq!(app.exes[0].script.as_ref().unwrap().value, "*/cli.js");
         assert!(app.exes[1].script.is_none());
         assert_eq!(app.owns.len(), 2);
+        assert_eq!(app.inherit.len(), 1);
+        assert_eq!(app.env[1].value, "LD_LIBRARY_PATH=/opt/a/lib");
         let Item::Grant(g) = &p.items[4] else {
             panic!()
         };
@@ -385,7 +397,7 @@ mod tests {
             e,
             [
                 "expected `app`, `grant`, `claim`, `terminal`, `root_bypass` or `users`, found `bogus`",
-                "expected `exe`, `owns`, `mode` or `}`, found `frobnicate`",
+                "expected `exe`, `owns`, `mode`, `inherit`, `env` or `}`, found `frobnicate`",
                 "grant without permissions",
                 "expected `on` or `off`, found `maybe`",
                 "expected `,` or `to`, found `b`",
