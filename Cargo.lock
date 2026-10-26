@@ -243,6 +243,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "explsm-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "explsm-ipc",
+ "futures-util",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "explsm-common"
 version = "0.1.0"
 dependencies = [

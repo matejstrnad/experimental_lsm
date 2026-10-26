@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["explsm-common", "explsm-ipc", "explsm-policy", "explsmctl", "explsmd"]
+members = ["explsm-agent", "explsm-common", "explsm-ipc", "explsm-policy", "explsmctl", "explsmd"]
 
 [workspace.package]
 edition = "2024"

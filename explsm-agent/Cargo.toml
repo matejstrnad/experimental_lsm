@@ -1,0 +1,19 @@
+[package]
+name = "explsm-agent"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+explsm-ipc.workspace = true
+futures-util = { version = "0.3", default-features = false }
+tokio.workspace = true
+zbus = { workspace = true, features = ["service"] }
+
+[features]
+# `--answer`, which answers every prompt without asking, for the smoke tests.
+# Never in an installed agent: any process of the user could run it and have
+# its own denials allowed.
+test-answer = []
