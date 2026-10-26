@@ -49,6 +49,13 @@ grant @unconfined list to ssh      # every process that is no app
 
 terminal "/usr/bin/ptyxis", "/usr/sbin/sshd"
 grant @terminal read to ssh        # shells in a terminal (a heuristic, see the docs)
+
+app launcher {
+    exe "/opt/launcher/Launcher.AppImage"
+    inherit                        # what it runs (its bundled programs, Wine) is the app too
+    env "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"  # may be started with this
+    owns "~/.local/share/launcher"
+}
 ```
 
 See [docs/dsl.md](docs/dsl.md) for the details. Check a policy without

@@ -37,6 +37,8 @@ An application: what identifies it (`exe`) and the data it owns (`owns`).
 | `exe "PATH", …` | Executables of the app. A process is the app from the moment it executes one of them, and its children are too until they execute something else. At least one is required. Symlinks are followed. |
 | `owns "PATH", …` | Protected roots: the folder (or file) and everything below it belongs to the app. Optional: an app may own nothing and only be granted access to other apps' data. |
 | `mode audit` / `mode enforce` | `audit` (the default) allows every access and logs the ones the policy does not allow. `enforce` denies them with `EACCES`. |
+| `inherit` | Processes of the app keep its identity when they execute an exe that belongs to no app. See [`inherit`](#inherit). |
+| `env "NAME=VALUE", …` | Loader variables the app may be started with. See [`env`](#env-namevalue-). |
 
 App names are words of letters, digits, `_`, `-` and `.`. `unconfined`,
 `all`, `terminal`, `explsm-agent`, `explsmd` and `explsm-pins` are reserved.
@@ -52,6 +54,67 @@ as `~/.local/share/claude/versions/*`.
 
 `exe "…" script "…"` (interpreter identity, e.g. `node …/cli.js`) is
 reserved and reported as not supported yet.
+
+#### `inherit`
+
+Some apps are more than one exe: an AppImage mounts itself at a new
+`/tmp/.mount_*` path every time it starts and runs a shell script from
+there, which runs the real program; a launcher runs Wine through a Python
+script, and Wine runs the program it was given. None of those exes can be
+named in `exe`, and without `inherit` each of them is a process that is no
+app.
+
+With `inherit`, a process of the app that executes an exe that belongs to no
+app keeps the app's identity, and so do its children. An exe of another app
+still makes the process that app. Name the exe the app is started by (the
+AppImage, say) and the folders all of them use:
+
+```
+app launcher {
+    exe  "/opt/launcher/Launcher.AppImage"
+    inherit                  # its bundled programs, Wine, the games
+    owns "~/.local/share/launcher", "/srv/games"
+}
+```
+
+When a process keeps the identity this way, or executes one of the app's
+own exes again, its loader variables and user namespace are not checked
+(see [Loader variables](#loader-variables)): the app chose them itself.
+Everything the app runs is the app, though, including a browser it starts
+to open a link, so `inherit` is for apps whose helpers are trusted as much
+as the app.
+
+A process that was already running when the policy was loaded is only
+given the identity if its own exe is the app's. Restart the app after the
+first load.
+
+#### `env "NAME=VALUE", …`
+
+An app exe executed with `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT` set
+runs as no app, because the loader would run code of the caller's choice
+with the app's identity. `env` lists exact strings that don't drop it, e.g.
+for a launcher that a desktop entry starts with a library preloaded:
+
+```
+env "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"
+```
+
+- Only those three variables, which are the only ones looked at, may be
+  named. The string must match exactly, including the order of its entries,
+  and be at most 126 bytes long.
+- Each entry (separated by `:`, `;` or spaces) must be an absolute path,
+  without `$ORIGIN` and the like. Root must own it and the directories above
+  it, and they must not be writable by group or others: otherwise loading
+  the policy fails, since a user could put their own library there.
+- Any other loader variable next to an allowed one still drops the identity.
+
+#### Loader variables
+
+An exec that gives a process an app's identity (from no app, or from another
+app) is refused the identity if a loader variable is set that the app's
+`env` does not allow, or if the process is in a user namespace other than
+the initial one. An exec that keeps the identity of an `inherit` app is not
+checked.
 
 ### `grant SUBJECT PERMS to OWNER`
 

@@ -67,12 +67,19 @@ whatever the policy explicitly grants.
   never be installed.
 - **Tamper protection covers the loader and ptrace, not every way of
   injecting code.** Only `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT` drop
-  the identity. Variables that make a program load code by its own means
+  the identity, and not the exact strings an app's `env` allows, whose
+  paths only root can change. Variables that make a program load code by its own means
   (`NODE_OPTIONS`, `PYTHONPATH`, `GTK_MODULES`, `GIO_EXTRA_MODULES`, …) and
   config files the app reads from a user-writable place are not looked at.
   Policy for such apps should own those config folders. Processes started
   before explsm was first loaded are checked through `/proc/<pid>/environ`,
   which a process can overwrite in its own memory.
+- **`inherit` makes everything an app runs the app.** Shells, interpreters,
+  the programs bundled in an AppImage, Wine and what it runs, and also a
+  browser the app starts to open a link (when no browser was running). Their
+  loader variables and user namespaces are not checked either. An app that
+  downloads code (runtime updates, fixes for the programs it runs) gives that
+  code its identity. Use it for apps whose helpers are trusted like the app.
 - **User namespaces end the identity.** An app exe exec'd in a user
   namespace other than the initial one runs unconfined, because there its
   user can mount over the libraries or `/etc/ld.so.preload` the loader reads.
