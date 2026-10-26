@@ -29,7 +29,9 @@ use std::{
 
 use anyhow::Result;
 use aya::maps::MapData;
-use explsm_common::{APP_UNCONFINED, AppId, FileKey, TF_TAINTED, TF_TERMINAL, TaskInfo};
+use explsm_common::{
+    APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, FileKey, TF_TAINTED, TF_TERMINAL, TaskInfo,
+};
 
 use crate::procs;
 
@@ -49,19 +51,25 @@ pub struct Seeded {
     /// Threads that exec'd another binary while being seeded.
     pub reverted: usize,
     /// App processes left unconfined: started with `LD_PRELOAD` and the
-    /// like or in a user namespace, before or after explsm was loaded.
+    /// like (other than the app's `env` strings) or in a user namespace,
+    /// before or after explsm was loaded.
     pub tainted: HashSet<u32>,
     pub failures: Vec<(u32, io::Error)>,
 }
 
-pub fn running_apps(tasks: &MapData, exes: &HashMap<FileKey, AppId>) -> Result<Seeded> {
+/// `allowed_env` holds the loader variables each app may be started with.
+pub fn running_apps(
+    tasks: &MapData,
+    exes: &HashMap<FileKey, AppId>,
+    allowed_env: &HashSet<EnvKey>,
+) -> Result<Seeded> {
     let map = tasks.fd().as_fd();
     let mut out = Seeded::default();
     let mut seen_processes = HashSet::new();
     for _ in 0..MAX_PASSES {
         out.passes += 1;
         let before = out.threads + out.failures.len();
-        seed_pass(map, exes, &mut out, &mut seen_processes)?;
+        seed_pass(map, exes, allowed_env, &mut out, &mut seen_processes)?;
         if out.threads + out.failures.len() == before {
             break;
         }
@@ -73,6 +81,7 @@ pub fn running_apps(tasks: &MapData, exes: &HashMap<FileKey, AppId>) -> Result<S
 fn seed_pass(
     map: BorrowedFd<'_>,
     exes: &HashMap<FileKey, AppId>,
+    allowed_env: &HashSet<EnvKey>,
     out: &mut Seeded,
     seen: &mut HashSet<u32>,
 ) -> Result<()> {
@@ -91,7 +100,17 @@ fn seed_pass(
         // Started before explsm could look at its exec: its environment
         // block still shows what the loader saw, and its user namespace
         // whether its user could have mounted its own libraries.
-        if procs::tainted_env(pid) || procs::foreign_userns(pid) {
+        let allowed = |var: &[u8]| {
+            let mut key = EnvKey {
+                app: app_id,
+                val: [0; ENV_CHUNK],
+            };
+            var.len() < ENV_CHUNK && {
+                key.val[..var.len()].copy_from_slice(var);
+                allowed_env.contains(&key)
+            }
+        };
+        if procs::tainted_env(pid, allowed) || procs::foreign_userns(pid) {
             out.tainted.insert(pid);
             continue;
         }

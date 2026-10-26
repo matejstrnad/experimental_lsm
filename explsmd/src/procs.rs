@@ -1,5 +1,5 @@
-//! What the daemon reads about other processes: their exe, whether a loader
-//! variable is set in their environment, and their user namespace.
+//! What the daemon reads about other processes: their exe, the loader
+//! variables set in their environment, and their user namespace.
 //!
 //! All three are ptrace-mode reads of `/proc/<pid>`, and the Landlock
 //! domain the daemon puts itself in (`sandbox.rs`) refuses those for every
@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use explsm_common::FileKey;
+use explsm_common::{ENV_CHUNK, FileKey};
 use explsm_policy::resolve::file_key;
 
 const OP_EXE: u8 = 1;
@@ -76,10 +76,22 @@ pub fn exe(pid: u32) -> io::Result<Exe> {
     })
 }
 
-/// Whether process `pid` was started with a loader variable set (non-empty),
-/// or that can't be told.
-pub fn tainted_env(pid: u32) -> bool {
-    ask_bool(OP_TAINTED, pid).unwrap_or_else(|| local_tainted_env(pid))
+/// Whether process `pid` was started with a loader variable set (non-empty)
+/// that `allowed` does not take, or that can't be told.
+pub fn tainted_env(pid: u32, allowed: impl Fn(&[u8]) -> bool) -> bool {
+    let reply = match ask(OP_TAINTED, pid) {
+        Some(Ok(r)) => r,
+        // No answer is the cautious one.
+        Some(Err(_)) => return true,
+        None => encode_loader_vars(local_loader_vars(pid)),
+    };
+    match reply.split_first() {
+        Some((0, vars)) => vars
+            .split(|b| *b == 0)
+            .filter(|v| !v.is_empty())
+            .any(|v| !allowed(v)),
+        _ => true,
+    }
 }
 
 /// Whether process `pid` runs in a user namespace other than the initial
@@ -234,7 +246,7 @@ fn serve(sock: OwnedFd, parent: libc::pid_t) -> ! {
                     reply.extend_from_slice(&[0; 12]);
                 }
             },
-            OP_TAINTED => reply.push(local_tainted_env(pid).into()),
+            OP_TAINTED => reply.extend(encode_loader_vars(local_loader_vars(pid))),
             OP_FOREIGN_USERNS => reply.push(local_foreign_userns(pid).into()),
             _ => continue,
         }
@@ -327,19 +339,44 @@ fn local_exe(pid: u32) -> io::Result<Exe> {
 /// `explsm_common::env_var`.
 const LOADER_VARS: [&[u8]; 3] = [b"LD_PRELOAD=", b"LD_LIBRARY_PATH=", b"LD_AUDIT="];
 
-fn local_tainted_env(pid: u32) -> bool {
+/// The loader variables (non-empty) in the environment of `pid`, or `None`
+/// if it can't be read.
+fn local_loader_vars(pid: u32) -> Option<Vec<Vec<u8>>> {
     match fs::read(format!("/proc/{pid}/environ")) {
-        Ok(env) => env.split(|b| *b == 0).any(|var| {
-            LOADER_VARS
-                .iter()
-                .any(|p| var.len() > p.len() && var.starts_with(p))
-        }),
+        Ok(env) => Some(
+            env.split(|b| *b == 0)
+                .filter(|var| {
+                    LOADER_VARS
+                        .iter()
+                        .any(|p| var.len() > p.len() && var.starts_with(p))
+                })
+                .map(<[u8]>::to_vec)
+                .collect(),
+        ),
         // Gone: nothing to seed anyway.
         Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => {
-            false
+            Some(Vec::new())
         }
-        Err(_) => true,
+        Err(_) => None,
     }
+}
+
+/// The answer to `OP_TAINTED`: `0` and the variables, each followed by a
+/// NUL, or `1` if the process counts as tainted whatever is allowed:
+/// unreadable, or a variable too long to be allowed (or to fit the reply).
+fn encode_loader_vars(vars: Option<Vec<Vec<u8>>>) -> Vec<u8> {
+    let Some(vars) = vars else {
+        return vec![1];
+    };
+    let mut out = vec![0];
+    for var in vars {
+        if var.len() + 1 >= ENV_CHUNK || out.len() + var.len() + 1 > REPLY_MAX - 4 {
+            return vec![1];
+        }
+        out.extend(var);
+        out.push(0);
+    }
+    out
 }
 
 fn local_foreign_userns(pid: u32) -> bool {
