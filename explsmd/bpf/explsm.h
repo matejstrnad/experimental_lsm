@@ -36,6 +36,9 @@ typedef u32 app_id;
 #define MODE_AUDIT 0
 #define MODE_ENFORCE 1
 
+/* APP_FLAGS bits. */
+#define AF_INHERIT 1
+
 #define CFG_GENERATION 0
 #define CFG_ROOT_BYPASS 1
 #define CFG_DAEMON_TGID 2
@@ -148,6 +151,15 @@ struct daemon_path {
 	char path[DAEMON_PATH_LEN];
 };
 
+/* Bytes of the exec strings read at a time, and the most an ALLOWED_ENV
+ * string may have with its NUL. */
+#define ENV_CHUNK 128
+/* Key of ALLOWED_ENV: a loader variable as "NAME=VALUE", NUL-padded. */
+struct env_key {
+	app_id app;
+	char val[ENV_CHUNK];
+};
+
 struct inode_cache {
 	app_id owner;
 	u32 generation;
@@ -197,5 +209,6 @@ _Static_assert(__builtin_offsetof(struct event, exe) == 1136, "event layout");
 _Static_assert(__builtin_offsetof(struct event, start_time) == 1160, "event layout");
 _Static_assert(sizeof(struct event) == 1168, "event layout");
 _Static_assert(sizeof(struct temp_key) == 32, "temp_key layout");
+_Static_assert(sizeof(struct env_key) == 132, "env_key layout");
 
 #endif

@@ -2,8 +2,9 @@
 /* explsm LSM programs: the enforcement engine.
  *
  * - bprm_committed_creds: exe inode -> app id in task storage. An exec of an
- *   unknown exe drops any inherited identity. A terminal entry exe (TERMINALS)
- *   sets TF_TERMINAL, an app exe clears it.
+ *   unknown exe drops any inherited identity, unless the task's app has
+ *   AF_INHERIT (APP_FLAGS): then it keeps it. A terminal entry exe
+ *   (TERMINALS) sets TF_TERMINAL, an app exe clears it.
  * - task_alloc: a child inherits its parent's identity and flags on
  *   fork/clone.
  * - file_open and the inode_* hooks: find the owner of the object (inode
@@ -34,10 +35,12 @@
  *
  * Hardening (Phase 5):
  * - An app exec'd with LD_PRELOAD, LD_LIBRARY_PATH or LD_AUDIT runs
- *   unconfined: the loader would run foreign code with its identity. So does
+ *   unconfined: the loader would run foreign code with its identity, unless
+ *   the policy allows that exact string for the app (ALLOWED_ENV). So does
  *   one exec'd in a user namespace other than the initial one, where its user
  *   may have mounted its own libraries or /etc/ld.so.preload over the real
- *   ones.
+ *   ones. An exec by a task of an AF_INHERIT app that keeps its identity is
+ *   not checked: the app itself chose the environment and the namespace.
  * - ptrace and everything that goes through ptrace_may_access (/proc/<pid>/
  *   mem, environ, fd/, process_vm_*, pidfd_getfd) on an app's task is only
  *   for the same app, the daemon, and root with the bypass on. So are the
@@ -217,6 +220,24 @@ struct {
 	__type(value, u32);
 } MODES SEC(".maps");
 
+/* Owner app id -> AF_* bits. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, MAX_APPS);
+	__type(key, u32);
+	__type(value, u32);
+} APP_FLAGS SEC(".maps");
+
+/* Loader variables (app, "NAME=VALUE") that don't drop the app's identity. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, 256);
+	__type(key, struct env_key);
+	__type(value, u32);
+} ALLOWED_ENV SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -259,6 +280,15 @@ static __always_inline int enforcing(app_id owner)
 		return 0;
 	u32 *mode = bpf_map_lookup_elem(&MODES, &owner);
 	return mode && *mode == MODE_ENFORCE;
+}
+
+/* Whether app keeps its identity across execs of exes that are no app. */
+static __always_inline int inherits(app_id app)
+{
+	if (app == APP_UNCONFINED)
+		return 0;
+	u32 *flags = bpf_map_lookup_elem(&APP_FLAGS, &app);
+	return flags && (*flags & AF_INHERIT);
 }
 
 static __always_inline struct file_key file_key(struct inode *inode)
@@ -662,8 +692,6 @@ static __always_inline int exe_path(struct dentry *d)
 	return exe_guard(bpf_map_lookup_elem(&EXE_PATHS, &key), d);
 }
 
-/* Bytes of the exec strings read at a time. */
-#define ENV_CHUNK 128
 /* Most reads for one exec: argv and envp of up to ~512 KiB, or as many
  * strings. More than that is treated as unreadable. */
 #define ENV_STEPS 4096
@@ -680,7 +708,8 @@ struct env_scan {
 	u32 cont;
 	u32 found;
 	u32 _pad;
-	char buf[ENV_CHUNK];
+	/* The string read, with the app it is checked for. */
+	struct env_key key;
 };
 
 /* Whether the string read into buf (n bytes with the NUL) is prefix with a
@@ -696,23 +725,39 @@ static __always_inline int env_is(const char *buf, long n, const char *prefix,
 	return 1;
 }
 
+/* Whether the string read into s->key (n bytes with the NUL) is one the
+ * policy allows for the app. Longer ones than a chunk never are. */
+static __always_inline int env_allowed(struct env_scan *s, long n)
+{
+	if (n >= ENV_CHUNK)
+		return 0;
+	for (int i = 0; i < ENV_CHUNK; i++)
+		if (i >= n)
+			s->key.val[i] = 0;
+	return !!bpf_map_lookup_elem(&ALLOWED_ENV, &s->key);
+}
+
 static long env_step(u64 index, void *data)
 {
 	struct env_scan *s = data;
 	if (s->idx >= s->total || s->pos >= s->end)
 		return 1;
-	long n = bpf_probe_read_user_str(s->buf, ENV_CHUNK, (void *)s->pos);
+	char *buf = s->key.val;
+	long n = bpf_probe_read_user_str(buf, ENV_CHUNK, (void *)s->pos);
 	if (n <= 0) {
 		s->found |= ENV_UNREADABLE;
 		return 1;
 	}
 	if (!s->cont && s->idx >= s->argc) {
-		if (env_is(s->buf, n, "LD_PRELOAD=", 11))
-			s->found |= ENV_LD_PRELOAD;
-		else if (env_is(s->buf, n, "LD_LIBRARY_PATH=", 16))
-			s->found |= ENV_LD_LIBRARY_PATH;
-		else if (env_is(s->buf, n, "LD_AUDIT=", 9))
-			s->found |= ENV_LD_AUDIT;
+		u32 bit = 0;
+		if (env_is(buf, n, "LD_PRELOAD=", 11))
+			bit = ENV_LD_PRELOAD;
+		else if (env_is(buf, n, "LD_LIBRARY_PATH=", 16))
+			bit = ENV_LD_LIBRARY_PATH;
+		else if (env_is(buf, n, "LD_AUDIT=", 9))
+			bit = ENV_LD_AUDIT;
+		if (bit && !env_allowed(s, n))
+			s->found |= bit;
 	}
 	if (n == ENV_CHUNK) {
 		/* Truncated (or exactly that long: then the next read is just
@@ -727,16 +772,18 @@ static long env_step(u64 index, void *data)
 	return 0;
 }
 
-/* ENV_* bits of the loader variables set in the environment of bprm. Not
- * inlined, like is_daemon_path: each has a buffer, and in one stack frame
- * they would not fit. */
-static __attribute__((noinline)) u32 tainted_env(struct linux_binprm *bprm)
+/* ENV_* bits of the loader variables set in the environment of bprm that
+ * the policy does not allow for app. Not inlined, like is_daemon_path: each
+ * has a buffer, and in one stack frame they would not fit. */
+static __attribute__((noinline)) u32 tainted_env(struct linux_binprm *bprm,
+						 app_id app)
 {
 	struct env_scan s = {
 		.pos = bprm->p,
 		.end = bprm->exec,
 		.argc = bprm->argc,
 		.total = bprm->argc + bprm->envc,
+		.key.app = app,
 	};
 	bpf_loop(ENV_STEPS, env_step, &s, 0);
 	if (s.idx < s.total)
@@ -766,6 +813,25 @@ static __attribute__((noinline)) int is_daemon_path(struct linux_binprm *bprm)
 	return 0;
 }
 
+/* Count an exec that left the task with app's identity, and report it if
+ * asked to. */
+static __always_inline int exec_as(struct linux_binprm *bprm,
+				   struct file_key key, app_id app)
+{
+	bump(STAT_EXECS);
+	if (!config(CFG_LOG_EXECS))
+		return 0;
+
+	struct event *ev = new_event(EV_EXEC, app, APP_UNCONFINED);
+	if (!ev)
+		return 0;
+	ev->file = key;
+	ev->path.kind = PATH_FULL;
+	ev->path.len = bpf_probe_read_kernel_str(ev->path.buf, PATH_LEN, bprm->filename);
+	bpf_ringbuf_submit(ev, 0);
+	return 0;
+}
+
 /* Sleepable: reads the environment of the new process. */
 SEC("lsm.s/bprm_committed_creds")
 int bprm_committed_creds(u64 *ctx)
@@ -778,8 +844,16 @@ int bprm_committed_creds(u64 *ctx)
 		app = APP_DAEMON;
 	struct task_struct *task = bpf_get_current_task_btf();
 
+	/* A task of an inheriting app keeps it across an exe that is no app's
+	 * (helpers, shells, a bundled runtime) and across its own: the app
+	 * chose the exe, its environment and its namespace. */
+	struct task_info *cur = bpf_task_storage_get(&TASKS, task, NULL, 0);
+	app_id prev = cur ? cur->app_id : APP_UNCONFINED;
+	if (cur && (app == APP_UNCONFINED || app == prev) && inherits(prev))
+		return exec_as(bprm, key, prev);
+
 	/* The loader would run foreign code inside the app: no identity. */
-	u32 env = app != APP_UNCONFINED ? tainted_env(bprm) : 0;
+	u32 env = app != APP_UNCONFINED ? tainted_env(bprm, app) : 0;
 	if (app != APP_UNCONFINED && task->cred->user_ns->level)
 		env |= ENV_USERNS;
 	if (env) {
@@ -826,18 +900,7 @@ int bprm_committed_creds(u64 *ctx)
 	info->app_id = app;
 	/* An app between a terminal and a task ends @terminal trust. */
 	info->flags = 0;
-	bump(STAT_EXECS);
-	if (!config(CFG_LOG_EXECS))
-		return 0;
-
-	struct event *ev = new_event(EV_EXEC, app, APP_UNCONFINED);
-	if (!ev)
-		return 0;
-	ev->file = key;
-	ev->path.kind = PATH_FULL;
-	ev->path.len = bpf_probe_read_kernel_str(ev->path.buf, PATH_LEN, bprm->filename);
-	bpf_ringbuf_submit(ev, 0);
-	return 0;
+	return exec_as(bprm, key, app);
 }
 
 SEC("lsm/task_alloc")

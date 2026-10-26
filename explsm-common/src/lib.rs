@@ -148,6 +148,26 @@ pub mod perm {
 pub const MODE_AUDIT: u32 = 0;
 pub const MODE_ENFORCE: u32 = 1;
 
+/// Bits of the per-app `APP_FLAGS` array.
+pub mod app_flag {
+    /// Processes of the app keep its identity when they exec an exe that
+    /// belongs to no app, and their execs of its own exes are not checked
+    /// for loader variables or user namespaces.
+    pub const INHERIT: u32 = 1 << 0;
+}
+
+/// Bytes of an `ALLOWED_ENV` string, with the NUL padding.
+pub const ENV_CHUNK: usize = 128;
+
+/// Key of the `ALLOWED_ENV` map: a loader variable as `NAME=VALUE`,
+/// NUL-padded, that does not drop the identity of `app` at exec.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EnvKey {
+    pub app: AppId,
+    pub val: [u8; ENV_CHUNK],
+}
+
 /// Indexes into the `CONFIG` array map.
 pub const CFG_GENERATION: u32 = 0;
 /// Non-zero: tasks with fsuid 0 bypass every check except the label.
@@ -164,7 +184,7 @@ pub const CONFIG_LEN: u32 = 5;
 
 /// Value of `CONFIG[CFG_LAYOUT]` this build writes and expects. Bump it when
 /// a map's key, value or meaning changes.
-pub const LAYOUT_VERSION: u32 = 7;
+pub const LAYOUT_VERSION: u32 = 8;
 
 /// Index into the per-CPU `STATS` array map.
 #[repr(u32)]
@@ -330,7 +350,8 @@ pub const REASON_ENV: u32 = 4;
 pub const REASON_SELF: u32 = 5;
 
 /// Environment variables that make the dynamic loader run foreign code in a
-/// process. An app exec'd with one of them (non-empty) gets no identity.
+/// process. An app exec'd with one of them (non-empty) gets no identity,
+/// unless the policy allows that exact string for the app (`env`).
 pub mod env_var {
     pub const LD_PRELOAD: u32 = 1 << 0;
     pub const LD_LIBRARY_PATH: u32 = 1 << 1;
@@ -452,6 +473,7 @@ const _: () = {
     assert!(offset_of!(Event, start_time) == 1160);
     assert!(size_of::<Event>() == 1168);
     assert!(size_of::<TempKey>() == 32);
+    assert!(size_of::<EnvKey>() == 132);
 };
 
 #[cfg(feature = "user")]
@@ -466,4 +488,5 @@ mod user {
     unsafe impl aya::Pod for TempKey {}
     unsafe impl aya::Pod for OwnKey {}
     unsafe impl aya::Pod for DaemonPath {}
+    unsafe impl aya::Pod for EnvKey {}
 }
