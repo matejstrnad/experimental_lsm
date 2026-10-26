@@ -6,6 +6,12 @@ A data-centric eBPF LSM in Rust: an application's folder (`~/.claude`,
 policy language and [docs/threat-model.md](docs/threat-model.md) for what it
 does and does not protect against.
 
+> [!WARNING]
+> explsm is an experimental research project. It has not been audited, its
+> policy language and on-disk formats may change without notice, and a
+> mistake in it can deny access to your own data. Don't use it in
+> production or on a machine you can't afford to break.
+
 **Status: Phase 5, hardening.** Each app is in audit or enforce mode on its
 own; start in audit mode. Denials and folders apps create can be put to the
 user as desktop notifications by `explsm-agent`. Apps are protected against
@@ -13,8 +19,8 @@ tampering by other processes of the same user (ptrace, `/proc/<pid>/mem`,
 `LD_PRELOAD`, user namespaces, forced core dumps, replacing their exe), and
 explsm protects itself: it stays loaded when the daemon exits, and only
 `explsmctl unload` removes it. It is packaged as a `.deb` that starts explsmd
-at boot. Before running it on a machine you depend on, read
-[docs/production-review.md](docs/production-review.md).
+at boot. If you run it on a machine you depend on anyway, read
+[docs/production-review.md](docs/production-review.md) first.
 
 ## Requirements
 

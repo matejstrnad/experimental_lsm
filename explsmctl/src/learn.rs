@@ -52,13 +52,29 @@ fn perm_list(bits: u32) -> String {
     names.join(", ")
 }
 
+/// What the events of a `need` that no grant covers were, for the comment
+/// that counts them.
+fn ungrantable(need: &str) -> (&'static str, &'static str) {
+    match need {
+        "xdev" => ("xdev", "rename or link across owners"),
+        "label" => ("label", "label change"),
+        "tamper" => (
+            "tamper",
+            "ptrace, signal, rlimit or exe dir of the app's processes",
+        ),
+        "self" => ("self", "access to explsm itself"),
+        _ => ("other", "unknown need"),
+    }
+}
+
 /// Suggested policy lines for the accesses to data of `app`. Renames and
-/// links across owners (`xdev`) and label changes can't be granted and are
-/// left out. Unconfined accessors only get comments: `@unconfined` means
-/// every process without an app, which is rarely what is wanted.
+/// links across owners (`xdev`), label changes, tampering with the app's
+/// processes and access to explsm itself can't be granted; they are only
+/// counted, per kind. Unconfined accessors only get comments: `@unconfined`
+/// means every process without an app, which is rarely what is wanted.
 pub fn suggest(app: &str, records: &[Record]) -> String {
     let mut by_subject: BTreeMap<&str, Seen> = BTreeMap::new();
-    let mut skipped = 0;
+    let mut skipped: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     for r in records {
         let bits = r
             .need
@@ -66,7 +82,7 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
             .filter_map(|n| perm::NAMES.iter().find(|(_, name)| *name == n.trim()))
             .fold(0, |acc, (bit, _)| acc | bit);
         if bits == 0 {
-            skipped += 1;
+            *skipped.entry(ungrantable(r.need.trim())).or_default() += 1;
             continue;
         }
         let seen = by_subject.entry(&r.subject).or_default();
@@ -108,10 +124,10 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
             ));
         }
     }
-    if skipped > 0 {
+    for ((kind, what), n) in skipped {
         out.push_str(&format!(
-            "# {skipped} rename/link/label event{} can't be granted\n",
-            plural(skipped)
+            "# {n} {kind} event{} can't be granted ({what})\n",
+            plural(n)
         ));
     }
     out
@@ -156,7 +172,26 @@ not json
              # unconfined processes needed read, write (2 events, e.g. /h/.ssh/id; from cat (1), vim (1))\n\
              # define an app for them and grant it, or (broad):\n\
              # grant @unconfined read,write to ssh\n\
-             # 2 rename/link/label events can't be granted\n"
+             # 1 other event can't be granted (unknown need)\n\
+             # 1 xdev event can't be granted (rename or link across owners)\n"
+        );
+    }
+
+    #[test]
+    fn names_each_ungrantable_kind() {
+        let records = [
+            rec("unconfined", "tamper", "runtime-worker", "target=18296"),
+            rec("unconfined", "tamper", "gdb", "target=18296"),
+            rec("unconfined", "label", "setfattr", "/h/.ssh"),
+            rec("ssh", "xdev", "mv", "/h/.ssh/a -> /tmp/a"),
+            rec("unconfined", "self", "bpftool", "id=17"),
+        ];
+        assert_eq!(
+            suggest("ssh", &records),
+            "# 1 label event can't be granted (label change)\n\
+             # 1 self event can't be granted (access to explsm itself)\n\
+             # 2 tamper events can't be granted (ptrace, signal, rlimit or exe dir of the app's processes)\n\
+             # 1 xdev event can't be granted (rename or link across owners)\n"
         );
     }
 }
