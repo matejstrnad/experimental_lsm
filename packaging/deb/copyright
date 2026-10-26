@@ -1,0 +1,13 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: explsm
+
+Files: *
+Copyright: 2026 Matej Strnad <contact@matejstrnad.cz>
+License: MIT or Apache-2.0
+ The Rust code is licensed under MIT or Apache-2.0, at your option.
+
+Files: explsmd/bpf/*
+Copyright: 2026 Matej Strnad <contact@matejstrnad.cz>
+License: MIT or GPL-2.0
+ The BPF programs are licensed under MIT or GPL-2.0 (GPL-only BPF helpers
+ are used).

@@ -1,0 +1,16 @@
+#!/bin/sh
+# explsm postrm: on purge, remove what explsmd wrote. Policy files you wrote
+# in /etc/explsm/policy.d are left.
+set -e
+
+case "$1" in
+remove)
+    [ -d /run/systemd/system ] && systemctl daemon-reload >/dev/null 2>&1 || true
+    ;;
+purge)
+    rm -rf /var/lib/explsm /etc/explsm/claims.d
+    rmdir /etc/explsm/policy.d /etc/explsm 2>/dev/null || true
+    ;;
+esac
+
+exit 0

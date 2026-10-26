@@ -1,0 +1,14 @@
+[Unit]
+Description=explsm agent (prompts for denied accesses and new folders)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Must be the path explsmd was given with --agent (default below): only
+# processes running it are taken as agents.
+ExecStart=/usr/libexec/explsm-agent
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical-session.target

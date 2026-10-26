@@ -1,0 +1,24 @@
+#!/bin/sh
+# explsm prerm: turn explsm off before its files are replaced or removed.
+# Unloading drops the pins and labels and stops explsmd, so dpkg may change
+# explsm's own files even with `root_bypass off`, and a new version starts
+# from scratch (it may use another map layout). explsm is off for the few
+# seconds an upgrade takes.
+set -e
+
+case "$1" in
+remove|upgrade|deconfigure)
+    if [ -x /usr/bin/explsmctl ]; then
+        explsmctl unload || true
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl stop explsmd.service >/dev/null 2>&1 || true
+    fi
+    if [ "$1" = remove ]; then
+        systemctl disable explsmd.service >/dev/null 2>&1 || true
+        systemctl --global disable explsm-agent.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

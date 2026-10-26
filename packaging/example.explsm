@@ -1,0 +1,23 @@
+# /etc/explsm/policy.d/ssh.explsm: ~/.ssh belongs to the OpenSSH tools, for
+# every regular user. Start in audit mode, read `explsmctl log --app ssh` for
+# a while, then switch to `mode enforce` and run `explsmctl load`.
+
+app ssh {
+    exe "/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/sftp"
+    exe "/usr/bin/ssh-add", "/usr/bin/ssh-agent", "/usr/bin/ssh-keygen"
+    owns "~/.ssh"
+    mode audit
+}
+
+# Shells may list the folder (completion), but not read the keys.
+grant @unconfined list to ssh
+
+# Processes started from a terminal (with no app exec in between) that have
+# a controlling tty are @terminal, so you can read your own ssh config by
+# hand. A heuristic, not a boundary: any program can start a terminal.
+# List the emulator process that starts the shells: for GNOME Terminal that
+# is gnome-terminal-server, not the gnome-terminal command. Missing ones are
+# only warnings.
+terminal "/usr/bin/ptyxis", "/usr/libexec/gnome-terminal-server", "/usr/bin/konsole"
+terminal "/usr/sbin/sshd"
+grant @terminal read, list to ssh

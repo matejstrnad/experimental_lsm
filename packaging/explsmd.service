@@ -1,0 +1,49 @@
+[Unit]
+Description=explsm daemon (data-centric BPF LSM)
+Documentation=file:///usr/share/doc/explsm/README.md
+# explsm stays loaded when this service stops (the programs are pinned in
+# /sys/fs/bpf/explsm); `explsmctl unload` turns it off. Escape hatch: boot
+# with `explsm=off` on the kernel command line (pins don't survive a reboot).
+# Not pulled in by rescue.target, which is the other way in.
+ConditionKernelCommandLine=!explsm=off
+ConditionPathExists=/etc/explsm/policy.d
+Wants=dbus.socket
+After=dbus.socket local-fs.target
+# Attached before anyone can log in, so user sessions start protected.
+Before=systemd-user-sessions.service display-manager.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# Ready once the bus name is owned, which explsmd does after attaching.
+Type=dbus
+BusName=org.explsm.Daemon1
+ExecStart=/usr/sbin/explsmd
+ExecReload=/bin/kill -HUP $MAINPID
+# Not on success: `explsmctl unload` stops the daemon for good.
+Restart=on-failure
+RestartSec=2s
+# A hung start must not hold up logins for long.
+TimeoutStartSec=30s
+# Decisions are made in the kernel; the daemon reads their events, asks the
+# agents and follows package updates. High priority keeps that prompt, and
+# the OOM killer leaves it alone. No realtime class: an event storm must not
+# be able to starve the machine.
+Nice=-10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+OOMScoreAdjust=-1000
+# explsmd loads BPF programs, reads /proc of every process and labels
+# protected folders wherever they are (homes, /srv, /tmp), so most of the
+# file system has to stay visible and writable for it.
+NoNewPrivileges=yes
+ProtectSystem=true
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+# Declined auto-claims are remembered in /var/lib/explsm.
+StateDirectory=explsm
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
