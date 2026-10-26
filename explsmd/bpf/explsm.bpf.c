@@ -725,15 +725,13 @@ static __always_inline int env_is(const char *buf, long n, const char *prefix,
 	return 1;
 }
 
-/* Whether the string read into s->key (n bytes with the NUL) is one the
- * policy allows for the app. Longer ones than a chunk never are. */
+/* Whether the string read into s->key (n bytes with the NUL, the rest of
+ * the chunk zeroed) is one the policy allows for the app. Longer ones than a
+ * chunk never are. */
 static __always_inline int env_allowed(struct env_scan *s, long n)
 {
 	if (n >= ENV_CHUNK)
 		return 0;
-	for (int i = 0; i < ENV_CHUNK; i++)
-		if (i >= n)
-			s->key.val[i] = 0;
 	return !!bpf_map_lookup_elem(&ALLOWED_ENV, &s->key);
 }
 
@@ -743,6 +741,9 @@ static long env_step(u64 index, void *data)
 	if (s->idx >= s->total || s->pos >= s->end)
 		return 1;
 	char *buf = s->key.val;
+	/* A constant-size clear: zeroing just the tail after the read would
+	 * be a loop on n, which the verifier walks for every n. */
+	__builtin_memset(buf, 0, ENV_CHUNK);
 	long n = bpf_probe_read_user_str(buf, ENV_CHUNK, (void *)s->pos);
 	if (n <= 0) {
 		s->found |= ENV_UNREADABLE;
