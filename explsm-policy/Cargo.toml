@@ -1,0 +1,11 @@
+[package]
+name = "explsm-policy"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+ariadne = "0.6"
+explsm-common.workspace = true
+glob = "0.3"
+libc.workspace = true
