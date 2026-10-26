@@ -12,7 +12,7 @@ use std::{
 
 use explsm_common::{APP_UNCONFINED, AppId, FileKey};
 
-use crate::{Compiled, PathPat, users::User};
+use crate::{Compiled, PathPat, env_paths, users::User};
 
 /// `(s_dev, i_ino)` as the kernel sees it. Userspace `st_dev` uses a
 /// different encoding than the kernel's internal `MKDEV` (major << 20).
@@ -90,11 +90,23 @@ impl Resolved {
 
 /// Resolve every exe, root and terminal of `policy` for `users`. Missing
 /// paths are not errors; one inode claimed by two apps is, and so is an app
-/// exe that is also a terminal.
+/// exe that is also a terminal, and an `env` path a user could replace.
 pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String>> {
     let mut out = Resolved::default();
     let mut errors = Vec::new();
     for app in &policy.apps {
+        for var in &app.env {
+            for path in env_paths(var) {
+                if let Some(bad) = replaceable(Path::new(path)) {
+                    errors.push(format!(
+                        "`env \"{var}\"` of {}: a user could replace {}, and the loader \
+                         would run what they put there as the app",
+                        app.name,
+                        bad.display()
+                    ));
+                }
+            }
+        }
         for (kind, pats) in [(Kind::Exe, &app.exes), (Kind::Root, &app.roots)] {
             for pat in pats {
                 for path in pat.expand(users) {
@@ -122,6 +134,29 @@ pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String
     } else {
         Err(errors)
     }
+}
+
+/// The first of `path` (or what it links to) and the directories above it
+/// that a user other than root could change, or create where it is missing.
+fn replaceable(path: &Path) -> Option<PathBuf> {
+    let mut chains = vec![path.to_path_buf()];
+    if let Ok(real) = fs::canonicalize(path)
+        && real != path
+    {
+        chains.push(real);
+    }
+    for chain in chains {
+        for p in chain.ancestors() {
+            let Ok(md) = fs::symlink_metadata(p) else {
+                continue;
+            };
+            let mode_writable = !md.file_type().is_symlink() && md.mode() & 0o022 != 0;
+            if md.uid() != 0 || mode_writable {
+                return Some(p.to_path_buf());
+            }
+        }
+    }
+    None
 }
 
 fn resolve_one(
@@ -265,6 +300,22 @@ mod tests {
             uid: 1000,
             home: home.into(),
         }
+    }
+
+    #[test]
+    fn env_paths_a_user_could_replace() {
+        let t = TempDir::new("env");
+        let d = &t.0;
+        fs::write(d.join("lib.so"), "").unwrap();
+        let p = policy(&format!(
+            r#"app a {{ exe "/a" env "LD_PRELOAD=/usr", "LD_LIBRARY_PATH=/usr/lib:{d}/lib.so" }}"#,
+            d = d.display()
+        ));
+        let errors = resolve(&p, &[]).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("LD_LIBRARY_PATH"), "{errors:?}");
+        let p = policy(r#"app a { exe "/a" env "LD_PRELOAD=/usr/bin/env" }"#);
+        assert!(resolve(&p, &[]).is_ok());
     }
 
     #[test]
