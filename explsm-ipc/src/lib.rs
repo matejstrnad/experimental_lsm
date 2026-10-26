@@ -74,6 +74,10 @@ pub struct AppStatus {
     pub name: String,
     pub id: u32,
     pub mode: String,
+    /// `inherit`: the identity is kept across execs of exes that are no app.
+    pub inherit: bool,
+    /// `env`: loader variables that keep the identity.
+    pub env: Vec<String>,
     pub exes: Vec<FileStatus>,
     pub roots: Vec<FileStatus>,
     /// Paths of the policy that match nothing yet.

@@ -174,9 +174,13 @@ fn check(
         }
     };
     for app in &policy.apps {
-        println!("app {} ({})", app.name, app.mode.name());
+        let inherit = if app.inherit { ", inherit" } else { "" };
+        println!("app {} ({}{inherit})", app.name, app.mode.name());
         for f in resolved.exes.iter().filter(|f| f.app == app.id) {
             println!("  exe     {}  {}", f.path.display(), resolve::show_key(&f.key));
+        }
+        for var in &app.env {
+            println!("  env     {var}");
         }
         for f in resolved.roots.iter().filter(|f| f.app == app.id) {
             println!("  root    {}  {}", f.path.display(), resolve::show_key(&f.key));
@@ -307,9 +311,13 @@ async fn status() -> Result<ExitCode> {
     );
     println!("users       {}", s.users.join(", "));
     for app in &s.apps {
-        println!("\napp {} ({}, id {})", app.name, app.mode, app.id);
+        let inherit = if app.inherit { ", inherit" } else { "" };
+        println!("\napp {} ({}{inherit}, id {})", app.name, app.mode, app.id);
         for f in &app.exes {
             println!("  exe     {}  {}", f.path, f.key);
+        }
+        for var in &app.env {
+            println!("  env     {var}");
         }
         for f in &app.roots {
             let note = if f.note.is_empty() {

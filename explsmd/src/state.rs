@@ -36,7 +36,7 @@ use aya::{
 };
 use explsm_common::{
     APP_AGENT, APP_DAEMON, AppId, CFG_DAEMON_TGID, CFG_GENERATION, CFG_LOG_EXECS, CFG_ROOT_BYPASS,
-    DAEMON_PATH_LEN, DaemonPath, FileKey, GrantKey, MODE_ENFORCE, OWNER_EXE, OWNER_PINS, OwnKey,
+    DAEMON_PATH_LEN, DaemonPath, EnvKey, FileKey, GrantKey, MODE_ENFORCE, OWNER_EXE, OWNER_PINS, OwnKey,
     STATS_LEN, TempKey, perm,
 };
 use explsm_ipc::{AppStatus, FileStatus, GrantStatus, ReloadReply, Status};
@@ -123,6 +123,8 @@ struct Applied {
     roots: HashMap<FileKey, AppId>,
     grants: HashMap<GrantKey, u32>,
     modes: HashMap<AppId, u32>,
+    app_flags: HashMap<AppId, u32>,
+    allowed_env: HashMap<EnvKey, u32>,
     terminals: HashMap<FileKey, u32>,
     claim_parents: HashMap<FileKey, u32>,
     exe_dirs: HashMap<FileKey, AppId>,
@@ -328,6 +330,7 @@ impl State {
         self.applied.exe_dirs = read_map(&self.ebpf, "EXE_DIRS")?;
         self.applied.exe_paths = read_map(&self.ebpf, "EXE_PATHS")?;
         self.applied.own_ids = read_map(&self.ebpf, "OWN_IDS")?;
+        self.applied.allowed_env = read_map(&self.ebpf, "ALLOWED_ENV")?;
         let temp: HashMap<TempKey, u32> = read_map(&self.ebpf, "TEMP_GRANTS")?;
         let mut map: BpfHashMap<_, TempKey, u32> =
             BpfHashMap::try_from(self.ebpf.map_mut("TEMP_GRANTS").context("TEMP_GRANTS")?)?;
@@ -731,6 +734,22 @@ impl State {
                 self.applied.modes.insert(*app, *mode);
             }
         }
+        let mut map: Array<_, u32> =
+            Array::try_from(self.ebpf.map_mut("APP_FLAGS").context("APP_FLAGS")?)?;
+        for (app, flags) in self.policy.app_flags() {
+            if self.applied.app_flags.get(&app) != Some(&flags) {
+                map.set(app, flags, 0)?;
+                self.applied.app_flags.insert(app, flags);
+            }
+        }
+        let allowed_env: HashMap<EnvKey, u32> =
+            self.policy.allowed_env().map(|k| (k, 1)).collect();
+        sync_map(
+            &mut self.ebpf,
+            "ALLOWED_ENV",
+            &allowed_env,
+            &mut self.applied.allowed_env,
+        )?;
         if roots_changed {
             // Cached owners were computed against the old roots. Racing
             // with a bump from BPF is fine: both only increment.
@@ -797,7 +816,8 @@ impl State {
     /// Give running processes of `exes` their identity.
     pub fn seed(&self, exes: &HashMap<FileKey, AppId>) -> Result<()> {
         let tasks = self.tasks()?;
-        let seeded = seed::running_apps(tasks, exes)?;
+        let allowed_env = self.policy.allowed_env().collect();
+        let seeded = seed::running_apps(tasks, exes, &allowed_env)?;
         if seeded.threads + seeded.reverted + seeded.failures.len() > 0 {
             eprintln!(
                 "explsmd: seeded {} running processes ({} threads, {} passes, {} reverted)",
@@ -966,6 +986,8 @@ impl State {
                     name: app.name.clone(),
                     id: app.id,
                     mode: app.mode.name().into(),
+                    inherit: app.inherit,
+                    env: app.env.clone(),
                     exes,
                     roots,
                     missing,
