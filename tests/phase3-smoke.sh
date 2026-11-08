@@ -225,7 +225,10 @@ kill -INT "$daemon"; wait "$daemon"
 grep -E "stopping|warning" "$ERR"
 
 # --- journal: log and learn ------------------------------------------------
-if command -v systemd-run > /dev/null; then
+# A running systemd (not just its binaries, as in a virtme-ng VM) with
+# a journal.
+if command -v systemd-run > /dev/null && [[ -d /run/systemd/system ]] &&
+    systemctl is-active --quiet systemd-journald 2> /dev/null; then
     cat > "$DIR/audit.d/audit.explsm" <<EOF
 app auditee {
     exe "$DIR/auditee-true"
@@ -256,7 +259,7 @@ EOF
     grep -q "^grant @root read to auditee " <<< "$out" && grep -q "from cat" <<< "$out"
     check "explsmctl learn @root suggests the @root grant" $? "$out"
 else
-    skip "journal" "systemd-run is not available"
+    skip "journal" "systemd and its journal are not running"
 fi
 
 echo

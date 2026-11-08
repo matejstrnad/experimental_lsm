@@ -95,11 +95,12 @@ pins=/sys/fs/bpf/explsm-run$daemon
 
 # --- readiness ---------------------------------------------------------------
 check "explsmd tells systemd it is ready once sandboxed" \
-    "$(grep -q "READY=1" "$DIR/notify.log" && grep -q "STATUS=attached, sandboxed" "$DIR/notify.log"; echo $?)" \
+    "$(grep -q "READY=1" "$DIR/notify.log" && grep -qE "STATUS=attached, (partly )?sandboxed" "$DIR/notify.log"; echo $?)" \
     "$(cat "$DIR/notify.log")"
 
 # --- the sandbox and the helper ----------------------------------------------
-wait_err "sandboxed \(Landlock\)"
+# Older kernels have only some of the rights explsmd asks for.
+wait_err "sandboxed \(Landlock|partly sandboxed \(Landlock: this kernel has only some"
 check "explsmd is sandboxed" $? "$(grep -i sandbox "$ERR")"
 check "… with no_new_privs" "$([[ $(status_of "$daemon" NoNewPrivs) == 1 ]]; echo $?)" \
     "$(status_of "$daemon" NoNewPrivs)"
