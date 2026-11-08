@@ -41,8 +41,8 @@ An application: what identifies it (`exe`) and the data it owns (`owns`).
 | `env "NAME=VALUE", …` | Loader variables the app may be started with. See [`env`](#env-namevalue-). |
 
 App names are words of letters, digits, `_`, `-` and `.`. `unconfined`,
-`all`, `terminal`, `unknown`, `explsm-agent`, `explsmd` and `explsm-pins` are
-reserved. At most 251 different app names can be used until explsm is
+`all`, `terminal`, `root`, `unknown`, `explsm-agent`, `explsmd` and
+`explsm-pins` are reserved. At most 251 different app names can be used until explsm is
 unloaded: ids are not reused, because running processes keep theirs, and
 they are kept across daemon restarts in `/var/lib/explsm/ids`.
 
@@ -132,9 +132,13 @@ their own exe again in a user namespace they just created.
 
 Lets `SUBJECT` access the data of `OWNER`. Grants for the same pair add up.
 
-- **SUBJECT**: an app, `@unconfined` (every process that is no app), or
-  `@terminal` (see [`terminal`](#terminal-path-)). `@root` can't be granted
-  to: root bypasses every check unless `root_bypass off`.
+- **SUBJECT**: an app, `@unconfined` (every process that is no app),
+  `@root` (every process with fsuid 0 that is no app; it has the
+  `@unconfined` grants too) or `@terminal` (see
+  [`terminal`](#terminal-path-)). A root process of an app (a daemon named
+  by `exe`) has its app's grants only. `@root` grants matter where the
+  root bypass does not let root through anyway (see
+  [`root_bypass`](#root_bypass-onoff)).
 - **PERMS**: comma-separated, from `read`, `write`, `create`, `delete`,
   `rename`, `list` (read a directory), `setattr` (mode, owner, times,
   xattrs, ACLs), or `all`. Truncation counts as `write`.

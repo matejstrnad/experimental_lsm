@@ -7,7 +7,7 @@ use std::{
 
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
-    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_TERMINAL,
+    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_ROOT, SUBJECT_TERMINAL,
     app_flag, perm,
 };
 
@@ -24,8 +24,16 @@ use crate::{
 pub const MAX_NAMES: usize = OWNER_UNKNOWN as usize - 1;
 
 /// Names no app may have: the names of the builtin ids.
-pub const RESERVED_NAMES: [&str; 7] =
-    ["unconfined", "all", "terminal", "unknown", "explsm-agent", "explsmd", "explsm-pins"];
+pub const RESERVED_NAMES: [&str; 8] = [
+    "unconfined",
+    "all",
+    "terminal",
+    "root",
+    "unknown",
+    "explsm-agent",
+    "explsmd",
+    "explsm-pins",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -74,6 +82,7 @@ impl IdTable {
             APP_UNCONFINED => "unconfined",
             OWNER_ANY => "*",
             SUBJECT_TERMINAL => "terminal",
+            SUBJECT_ROOT => "root",
             APP_AGENT => "explsm-agent",
             APP_DAEMON => "explsmd",
             OWNER_PINS => "explsm-pins",
@@ -346,10 +355,9 @@ fn builtin_subject(s: &Spanned<String>) -> Result<AppId, Diagnostic> {
     match s.value.as_str() {
         "@unconfined" => Ok(APP_UNCONFINED),
         "@terminal" => Ok(SUBJECT_TERMINAL),
-        "@root" => Err(Diagnostic::error(s.span, "`@root` can't be granted to")
-            .note("root bypasses every check by default; use `root_bypass off` to turn that off")),
+        "@root" => Ok(SUBJECT_ROOT),
         other => Err(Diagnostic::error(s.span, format!("unknown builtin `{other}`"))
-            .note("the builtin subjects are `@unconfined` and `@terminal`")),
+            .note("the builtin subjects are `@unconfined`, `@root` and `@terminal`")),
     }
 }
 
@@ -892,7 +900,6 @@ mod tests {
         assert_eq!(grant("b read to a"), ["unknown app `b`"]);
         assert_eq!(grant("@unconfined read to b"), ["unknown app `b`"]);
         assert_eq!(grant("@unconfined exec to a"), ["unknown permission `exec`"]);
-        assert_eq!(grant("@root read to a"), ["`@root` can't be granted to"]);
 
         assert_eq!(grant("@nobody read to a"), ["unknown builtin `@nobody`"]);
         assert_eq!(
@@ -1015,6 +1022,35 @@ mod tests {
         assert_eq!(w, ["`@terminal` grant without any `terminal` exe"]);
         assert_eq!(errors("claim b \"/x\""), ["unknown app `b`"]);
         assert_eq!(errors("app terminal { exe \"/t\" }"), ["`terminal` is a reserved name"]);
+    }
+
+    #[test]
+    fn root_grants() {
+        let c = compiled(
+            "app a { exe \"/a\" }\ngrant @root read, list to a\ngrant @root list to *\n\
+             grant @root write to a",
+        );
+        assert_eq!(
+            c.grants[&GrantKey {
+                subject: SUBJECT_ROOT,
+                owner: 1
+            }],
+            perm::READ | perm::LIST | perm::WRITE
+        );
+        assert_eq!(
+            c.grants[&GrantKey {
+                subject: SUBJECT_ROOT,
+                owner: OWNER_ANY
+            }],
+            perm::LIST
+        );
+        assert!(c.warnings.is_empty());
+        assert_eq!(c.name(SUBJECT_ROOT), "root");
+        assert_eq!(errors("app root { exe \"/r\" }"), ["`root` is a reserved name"]);
+        assert_eq!(
+            errors("app a { exe \"/a\" }\ngrant a read to @root"),
+            ["the owner of a grant must be an app or `*`"]
+        );
     }
 
     #[test]

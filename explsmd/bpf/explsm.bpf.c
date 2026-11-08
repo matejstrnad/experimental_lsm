@@ -13,8 +13,9 @@
  *
  * Decision: the owner may do anything; otherwise, with @root bypass on, a
  * task with fsuid 0 may too; otherwise the perms must be in
- * GRANTS[(subject, owner)] | GRANTS[(subject, *)], plus the @terminal grants
- * for an unconfined task with TF_TERMINAL and a controlling tty, plus what the
+ * GRANTS[(subject, owner)] | GRANTS[(subject, *)], plus the @root grants for
+ * an unconfined task with fsuid 0, plus the @terminal grants for an
+ * unconfined task with TF_TERMINAL and a controlling tty, plus what the
  * user allowed through a prompt (TEMP_GRANTS). A missing perm is reported, and
  * denied with EACCES if the owner is in enforce mode. The daemon may list
  * everything, to find hard links in the trees.
@@ -553,6 +554,13 @@ static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 	u32 lacking = perms & ~granted(subject, owner);
 	if (!lacking)
 		return 0;
+	/* @root: a task with fsuid 0 that is no app. An app's root daemon has
+	 * its app's grants only. */
+	if (subject == APP_UNCONFINED && current_fsuid() == 0) {
+		lacking &= ~granted(SUBJECT_ROOT, owner);
+		if (!lacking)
+			return 0;
+	}
 	if (subject == APP_UNCONFINED && (current_flags() & TF_TERMINAL) &&
 	    bpf_get_current_task_btf()->signal->tty) {
 		lacking &= ~granted(SUBJECT_TERMINAL, owner);
@@ -593,7 +601,7 @@ static __always_inline struct event *new_event(u32 kind, app_id subject,
 	/* Not read in the sleepable exec hook; the exe is ev->file there. */
 	ev->exe = kind == EV_EXEC ? (struct file_key){} : current_exe();
 	ev->task_flags = current_flags();
-	ev->_pad = 0;
+	ev->fsuid = current_fsuid();
 	if (bpf_get_current_comm(ev->comm, sizeof(ev->comm)))
 		__builtin_memset(ev->comm, 0, sizeof(ev->comm));
 	struct task_struct *leader = bpf_get_current_task_btf()->group_leader;

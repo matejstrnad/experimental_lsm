@@ -7,6 +7,7 @@
 //! deny   pid=… … subject=ssh owner=ssh->unconfined rename need=xdev /home/me/.ssh/a -> /tmp/a
 //! deny   pid=… … subject=unconfined owner=ssh removexattr need=label /home/me/.ssh
 //! deny   pid=… … subject=unconfined(terminal) owner=ssh open(r) need=read /home/me/.ssh/config
+//! deny   pid=… … subject=root owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
 //! claim  pid=… … app=claude path=/home/me/.claude
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=LD_PRELOAD
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=userns
@@ -27,7 +28,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
     ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
-    REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, TF_TERMINAL, env_var, own_kind, path_kind, perm,
+    REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT, TF_TERMINAL, env_var, own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
 
@@ -199,9 +200,19 @@ fn rlimit_name(resource: u32) -> &'static str {
     NAMES.get(resource as usize).copied().unwrap_or("")
 }
 
+/// The subject's name: `root` for an unconfined task with fsuid 0 (the
+/// `@root` subject), else its app's.
+fn subject_id_name<'a>(ev: &Event, names: &'a IdTable) -> &'a str {
+    if ev.subject == APP_UNCONFINED && ev.fsuid == 0 {
+        names.name(SUBJECT_ROOT)
+    } else {
+        names.name(ev.subject)
+    }
+}
+
 /// The subject's name; unconfined tasks below a terminal are marked.
 fn subject_name(ev: &Event, names: &IdTable) -> String {
-    let name = names.name(ev.subject);
+    let name = subject_id_name(ev, names);
     if ev.subject == APP_UNCONFINED && ev.task_flags & TF_TERMINAL != 0 {
         format!("{name}(terminal)")
     } else {
@@ -228,7 +239,7 @@ pub fn render(
         ("EXPLSM_PID", ev.pid.to_string()),
         ("EXPLSM_UID", ev.uid.to_string()),
         ("EXPLSM_PROC", proc),
-        ("EXPLSM_SUBJECT", names.name(ev.subject).to_string()),
+        ("EXPLSM_SUBJECT", subject_id_name(ev, names).to_string()),
     ];
     if ev.task_flags & TF_TERMINAL != 0 {
         fields.push(("EXPLSM_TERMINAL", "1".into()));
@@ -402,6 +413,7 @@ mod tests {
         ev.pid = 7;
         ev.tid = 7;
         ev.uid = 1000;
+        ev.fsuid = 1000;
         ev.subject = 2;
         ev.owner = 1;
         ev.op = Op::Unlink as u32;
@@ -454,6 +466,16 @@ mod tests {
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
         assert!(line.text.contains(" subject=unconfined(terminal) "), "{}", line.text);
         assert!(line.fields.contains(&("EXPLSM_TERMINAL", "1".into())));
+
+        // fsuid 0 and no app: @root.
+        ev.fsuid = 0;
+        let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
+        assert!(line.text.contains(" subject=root(terminal) "), "{}", line.text);
+        assert!(line.fields.contains(&("EXPLSM_SUBJECT", "root".into())));
+        // A root process of an app is the app.
+        ev.subject = 2;
+        let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
+        assert!(line.text.contains(" subject=backup "), "{}", line.text);
     }
 
     #[test]
@@ -468,6 +490,7 @@ mod tests {
         ev.pid = 7;
         ev.tid = 7;
         ev.uid = 1000;
+        ev.fsuid = 1000;
         ev.subject = 1;
         ev.file = FileKey { dev: 1, _pad: 0, ino: 5 };
         ev.path.kind = path_kind::FULL;

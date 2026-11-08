@@ -69,6 +69,7 @@ app reader {
 }
 
 grant reader read, list to owner
+grant @root read to auditee
 EOF
 
 OUT=$DIR/events.log
@@ -277,6 +278,16 @@ start --no-root-bypass --no-seed
 run /usr/bin/cat "$E/secret"
 denied && has "^deny .*uid=0 .*need=read $E/secret\$"
 check "--no-root-bypass denies root" $? "rc=$rc $ev"
+has "^deny .*uid=0 .*subject=root owner=owner open\(r\) need=read $E/secret\$"
+check "… and logs it as subject=root" $? "$ev"
+
+run /usr/bin/cat "$A/file"
+[[ $rc -eq 0 ]] && quiet
+check "a @root grant lets root read" $? "rc=$rc $ev"
+
+run "$RB/bash" -c "read -r _ < '$A/file'"
+[[ $rc -eq 0 ]] && has "^audit .*uid=0 .*subject=reader owner=auditee open\(r\) need=read $A/file\$"
+check "a root process of an app has only its app's grants" $? "rc=$rc $ev"
 stop
 
 echo

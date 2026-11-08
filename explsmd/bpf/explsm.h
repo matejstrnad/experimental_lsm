@@ -31,6 +31,7 @@ typedef u32 app_id;
  * may read (and so run) but only its app may change. */
 #define OWNER_EXE 0x80000000u
 #define SUBJECT_TERMINAL 0xfffffffeu
+#define SUBJECT_ROOT 0xfffffffdu
 #define TF_TERMINAL 1
 #define TF_TAINTED 2
 #define MAX_WALK 4096
@@ -211,7 +212,7 @@ struct event {
 	struct ev_path path2;
 	struct file_key exe;
 	u32 task_flags;
-	u32 _pad;
+	u32 fsuid;
 	u64 start_time;
 };
 

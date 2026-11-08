@@ -119,6 +119,8 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
                 perm_list(seen.perms).replace(' ', ""),
             ));
         } else {
+            // Builtin subjects other than @unconfined.
+            let subject = if *subject == "root" { "@root" } else { subject };
             out.push_str(&format!(
                 "grant {subject} {} to {app}    # {comment}\n",
                 perm_list(seen.perms).replace(' ', "")
@@ -166,10 +168,12 @@ not json
             rec("unconfined", "read,write", "vim", "/h/.ssh/config"),
             rec("unconfined", "xdev", "mv", "/h/.ssh/a"),
             rec("editor", "all-unknown", "x", "/h/.ssh/b"),
+            rec("root", "list", "updatedb", "/h/.ssh"),
         ];
         assert_eq!(
             suggest("ssh", &records),
             "grant backup read,list to ssh    # 3 events, e.g. /h/.ssh/config; from restic (3)\n\
+             grant @root list to ssh    # 1 event, e.g. /h/.ssh; from updatedb (1)\n\
              # unconfined processes needed read, write (2 events, e.g. /h/.ssh/id; from cat (1), vim (1))\n\
              # define an app for them and grant it, or (broad):\n\
              # grant @unconfined read,write to ssh\n\

@@ -59,6 +59,10 @@ pub const OWNER_EXE: u32 = 1 << 31;
 /// Subject of `@terminal` grants in a [`GrantKey`].
 pub const SUBJECT_TERMINAL: AppId = u32::MAX - 1;
 
+/// Subject of `@root` grants in a [`GrantKey`]: processes with fsuid 0 that
+/// are no app. A root process of an app gets that app's grants only.
+pub const SUBJECT_ROOT: AppId = u32::MAX - 2;
+
 /// [`TaskInfo::flags`]: the task descends from a terminal entry exe with no
 /// app exec in between. With a controlling tty it gets `@terminal` grants.
 pub const TF_TERMINAL: u32 = 1;
@@ -486,7 +490,8 @@ pub struct Event {
     pub exe: FileKey,
     /// [`TaskInfo::flags`] of the task.
     pub task_flags: u32,
-    pub _pad: u32,
+    /// fsuid of the task: `0` with an unconfined subject is `@root`.
+    pub fsuid: u32,
     /// Start of the process (its thread group leader) in nanoseconds since
     /// boot, which tells it from a later process with the same pid.
     pub start_time: u64,
