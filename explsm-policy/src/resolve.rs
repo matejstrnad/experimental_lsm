@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use explsm_common::{APP_UNCONFINED, AppId, FileKey};
+use explsm_common::{APP_UNCONFINED, AppId, FileKey, term};
 
 use crate::{Compiled, PathPat, env_paths, users::User};
 
@@ -39,7 +39,8 @@ pub fn show_key(key: &FileKey) -> String {
 pub enum Kind {
     Exe,
     Root,
-    /// A terminal entry exe (`terminal …`); its `app` is unconfined.
+    /// A terminal entry exe (`terminal …`), shell (`shell …`) or desktop
+    /// shell (`desktop …`); its `app` is unconfined.
     Terminal,
 }
 
@@ -61,6 +62,9 @@ pub struct Found {
     pub app: AppId,
     /// [`PathPat::text`] it came from.
     pub pattern: String,
+    /// Of a [`Kind::Terminal`]: the [`term`] bits (terminal, shell,
+    /// desktop), the value of the `TERMINALS` map. 0 otherwise.
+    pub term: u32,
 }
 
 /// A path (or glob) of the policy that matches nothing yet.
@@ -110,28 +114,34 @@ pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String
         for (kind, pats) in [(Kind::Exe, &app.exes), (Kind::Root, &app.roots)] {
             for pat in pats {
                 for path in pat.expand(users) {
-                    resolve_one(policy, app.id, kind, pat, &path, &mut out, &mut errors);
+                    resolve_one(policy, (app.id, 0), kind, pat, &path, &mut out, &mut errors);
                 }
             }
         }
     }
-    for pat in &policy.terminals {
-        for path in pat.expand(users) {
-            resolve_one(
-                policy,
-                APP_UNCONFINED,
-                Kind::Terminal,
-                pat,
-                &path,
-                &mut out,
-                &mut errors,
-            );
+    for (bit, pats) in [
+        (term::TERMINAL, &policy.terminals),
+        (term::SHELL, &policy.shells),
+        (term::DESKTOP, &policy.desktops),
+    ] {
+        for pat in pats {
+            for path in pat.expand(users) {
+                resolve_one(
+                    policy,
+                    (APP_UNCONFINED, bit),
+                    Kind::Terminal,
+                    pat,
+                    &path,
+                    &mut out,
+                    &mut errors,
+                );
+            }
         }
     }
     for t in &out.terminals {
         if let Some(exe) = out.exes.iter().find(|e| e.key == t.key) {
             errors.push(format!(
-                "{} is both a terminal and an exe of {}",
+                "{} is both a terminal, shell or desktop exe and an exe of {}",
                 t.path.display(),
                 policy.name(exe.app)
             ));
@@ -169,7 +179,7 @@ fn replaceable(path: &Path) -> Option<PathBuf> {
 
 fn resolve_one(
     policy: &Compiled,
-    app: AppId,
+    (app, term): (AppId, u32),
     kind: Kind,
     pat: &PathPat,
     path: &Path,
@@ -224,7 +234,8 @@ fn resolve_one(
             Kind::Root => &mut out.roots,
             Kind::Terminal => &mut out.terminals,
         };
-        if let Some(other) = list.iter().find(|f| f.key == key) {
+        if let Some(other) = list.iter_mut().find(|f| f.key == key) {
+            other.term |= term;
             if other.app != app {
                 errors.push(format!(
                     "{} is {} {} of both {} and {}",
@@ -242,6 +253,7 @@ fn resolve_one(
             key,
             app,
             pattern: pat.text.clone(),
+            term,
         });
     }
     if !any {
@@ -384,7 +396,9 @@ mod tests {
         let p = policy(&format!("terminal \"{d}/x\"\napp a {{ exe \"{d}/x\" }}"));
         assert_eq!(
             resolve(&p, &[]).unwrap_err(),
-            [format!("{d}/x is both a terminal and an exe of a")]
+            [format!(
+                "{d}/x is both a terminal, shell or desktop exe and an exe of a"
+            )]
         );
         let p = policy(&format!("terminal \"{d}/x\""));
         assert_eq!(resolve(&p, &[]).unwrap().terminals[0].path, t.0.join("x"));

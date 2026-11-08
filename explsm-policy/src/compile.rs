@@ -6,9 +6,10 @@ use std::{
 };
 
 use explsm_common::{
-    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
-    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY,
-    OWNER_PINS, OWNER_UNKNOWN, SUBJECT_ROOT, SUBJECT_TERMINAL, app_flag, perm, root_bypass,
+    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ArgKey, ENV_CHUNK, EnvKey, GrantKey,
+    MAX_ALLOWED_ENV, MAX_DENY_ARGS, MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT,
+    MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_DESKTOP, SUBJECT_ROOT,
+    SUBJECT_TERMINAL, StartKey, app_flag, perm, root_bypass,
 };
 
 use crate::{
@@ -24,10 +25,11 @@ use crate::{
 pub const MAX_NAMES: usize = OWNER_UNKNOWN as usize - 1;
 
 /// Names no app may have: the names of the builtin ids.
-pub const RESERVED_NAMES: [&str; 8] = [
+pub const RESERVED_NAMES: [&str; 9] = [
     "unconfined",
     "all",
     "terminal",
+    "desktop",
     "root",
     "unknown",
     "explsm-agent",
@@ -114,6 +116,7 @@ impl IdTable {
             OWNER_ANY => "*",
             SUBJECT_TERMINAL => "terminal",
             SUBJECT_ROOT => "root",
+            SUBJECT_DESKTOP => "desktop",
             APP_AGENT => "explsm-agent",
             APP_DAEMON => "explsmd",
             OWNER_PINS => "explsm-pins",
@@ -246,13 +249,85 @@ pub struct App {
     pub inherit: bool,
     /// `env`: loader variables, as `NAME=VALUE`, that keep the identity.
     pub env: Vec<String>,
+    /// `code any`: may map any file as code. The default, `code trusted`,
+    /// allows only files that root alone can change, and the app's own.
+    pub code_any: bool,
+    /// `started_by`: the subjects (app ids, [`APP_UNCONFINED`],
+    /// [`SUBJECT_TERMINAL`], [`SUBJECT_DESKTOP`]) that may start the app.
+    /// Empty: anyone may.
+    pub started_by: Vec<AppId>,
+    /// `deny_args`: argument patterns that drop the identity, exact or
+    /// ending in `*` (a prefix).
+    pub deny_args: Vec<String>,
 }
 
 impl App {
     /// Value of the `APP_FLAGS` map.
     pub fn flags(&self) -> u32 {
-        if self.inherit { app_flag::INHERIT } else { 0 }
+        let mut flags = 0;
+        if self.inherit {
+            flags |= app_flag::INHERIT;
+        }
+        if self.code_any {
+            flags |= app_flag::CODE_ANY;
+        }
+        if !self.started_by.is_empty() {
+            flags |= app_flag::STARTED_BY;
+        }
+        if !self.deny_args.is_empty() {
+            flags |= app_flag::DENY_ARGS;
+        }
+        flags
     }
+
+    /// Name of a `started_by` subject.
+    pub fn spawner_name(id: AppId, ids: &IdTable) -> String {
+        match id {
+            APP_UNCONFINED => "@unconfined".into(),
+            SUBJECT_TERMINAL => "@terminal".into(),
+            SUBJECT_DESKTOP => "@desktop".into(),
+            _ => ids.name(id).into(),
+        }
+    }
+}
+
+/// Launchers that start whatever they are asked to: naming one in
+/// `started_by` lets anyone start the app through it.
+pub const UNTRUSTED_LAUNCHERS: [&str; 10] = [
+    "systemd",
+    "systemd-run",
+    "dbus-daemon",
+    "dbus-broker",
+    "gnome-session",
+    "gnome-session-binary",
+    "gnome-terminal-server",
+    "xdg-open",
+    "gio",
+    "gio-launch-desktop",
+];
+
+fn check_arg(arg: &Spanned<String>) -> Result<(), Diagnostic> {
+    let err = |msg: String| Diagnostic::error(arg.span, msg);
+    let body = arg.value.strip_suffix('*').unwrap_or(&arg.value);
+    if body.is_empty() {
+        return Err(err(
+            "an empty `deny_args` pattern would match every argument".into(),
+        ));
+    }
+    if body.contains(['*', '?', '[']) {
+        return Err(
+            err("a `deny_args` pattern is an argument, or a prefix ending in `*`".into())
+                .note("`*` may only be the last character; there are no other globs"),
+        );
+    }
+    // The exec hook reads an argument with its NUL in one chunk.
+    if body.len() + 1 >= ENV_CHUNK {
+        return Err(err(format!(
+            "`deny_args` patterns have at most {} bytes",
+            ENV_CHUNK - 2
+        )));
+    }
+    Ok(())
 }
 
 /// An error if more distinct absolute paths without a glob are in `pats` than
@@ -342,6 +417,11 @@ pub struct Compiled {
     /// Terminal entry exes (`terminal …`): their descendants get `@terminal`
     /// grants while they have a controlling tty.
     pub terminals: Vec<PathPat>,
+    /// `shell …`: exes that keep a chain of shells from a terminal going
+    /// (`started_by @terminal`).
+    pub shells: Vec<PathPat>,
+    /// `desktop …`: the exes of `@desktop`.
+    pub desktops: Vec<PathPat>,
     /// The id table this policy was compiled with, including earlier ids.
     pub ids: IdTable,
     /// Warnings, e.g. statements of `claims.d` that name apps that are gone.
@@ -371,6 +451,36 @@ impl Compiled {
         self.ids
             .ids()
             .map(|id| (id, self.app(id).map_or(0, App::flags)))
+    }
+
+    /// Keys of the `STARTED_BY` map: every app's `started_by` subjects.
+    pub fn started_by(&self) -> impl Iterator<Item = StartKey> + '_ {
+        self.apps.iter().flat_map(|a| {
+            a.started_by
+                .iter()
+                .map(|&spawner| StartKey { app: a.id, spawner })
+        })
+    }
+
+    /// Keys of the `DENY_ARGS` trie: every app's `deny_args` patterns.
+    pub fn deny_args(&self) -> impl Iterator<Item = ArgKey> + '_ {
+        self.apps.iter().flat_map(|a| {
+            a.deny_args.iter().map(|pat| {
+                let mut val = [0; ENV_CHUNK];
+                // An exact pattern with its NUL, a prefix without the `*`.
+                let (body, len) = match pat.strip_suffix('*') {
+                    Some(body) => (body, body.len()),
+                    None => (pat.as_str(), pat.len() + 1),
+                };
+                // check_arg keeps them shorter than a chunk.
+                val[..body.len()].copy_from_slice(body.as_bytes());
+                ArgKey {
+                    prefixlen: 32 + 8 * len as u32,
+                    app: a.id,
+                    val,
+                }
+            })
+        })
     }
 
     /// Keys of the `ALLOWED_ENV` map: every app's `env` strings.
@@ -438,8 +548,11 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let mut apps: Vec<App> = Vec::new();
     let mut app_spans: HashMap<&str, Span> = HashMap::new();
     let mut terminals = Vec::new();
+    let mut shells = Vec::new();
+    let mut desktops = Vec::new();
     // The maps the daemon writes them into are of a fixed size.
     let mut env_count = 0;
+    let mut args_count = 0;
 
     for item in &policy.items {
         match item {
@@ -490,6 +603,17 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
             }
             Item::App(a) => {
                 if let Some(app) = compile_app(a, &mut ids, &mut app_spans, &mut diags) {
+                    let before_args = args_count;
+                    args_count += app.deny_args.len();
+                    if before_args <= MAX_DENY_ARGS as usize && args_count > MAX_DENY_ARGS as usize
+                    {
+                        diags.push(Diagnostic::error(
+                            a.name.span,
+                            format!(
+                                "too many `deny_args` patterns: at most {MAX_DENY_ARGS} in all apps"
+                            ),
+                        ));
+                    }
                     let before = env_count;
                     env_count += app.env.len();
                     if before <= MAX_ALLOWED_ENV as usize && env_count > MAX_ALLOWED_ENV as usize {
@@ -503,10 +627,15 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     apps.push(app);
                 }
             }
-            Item::Terminal(paths) => {
+            Item::Terminal(paths) | Item::Shell(paths) | Item::Desktop(paths) => {
+                let list = match item {
+                    Item::Terminal(_) => &mut terminals,
+                    Item::Shell(_) => &mut shells,
+                    _ => &mut desktops,
+                };
                 for p in paths {
                     match PathPat::parse(p) {
-                        Ok(p) => terminals.push(p),
+                        Ok(p) => list.push(p),
                         Err(d) => diags.push(d),
                     }
                 }
@@ -535,6 +664,102 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                 Err(d) => diags.push(d),
             }
         }
+    }
+
+    // `started_by` after every app, so it may name apps of later files.
+    for item in &policy.items {
+        let Item::App(a) = item else { continue };
+        let Some(i) = apps.iter().position(|app| app.name == a.name.value) else {
+            continue;
+        };
+        let mut ids_of = Vec::new();
+        for who in &a.started_by {
+            let id = match who.value.as_str() {
+                "@terminal" => {
+                    if terminals.is_empty() {
+                        diags.push(
+                            Diagnostic::warning(
+                                who.span,
+                                "`started_by @terminal` without any `terminal` exe",
+                            )
+                            .note("no process is typed in a shell until the policy names terminal exes"),
+                        );
+                    }
+                    if shells.is_empty() {
+                        diags.push(
+                            Diagnostic::warning(
+                                who.span,
+                                "`started_by @terminal` without any `shell` exe",
+                            )
+                            .note(
+                                "only the terminal exe itself counts until the policy names \
+                                 shells, e.g. `shell \"/usr/bin/bash\"`",
+                            ),
+                        );
+                    }
+                    Ok(SUBJECT_TERMINAL)
+                }
+                "@desktop" => {
+                    if desktops.is_empty() {
+                        diags.push(
+                            Diagnostic::warning(
+                                who.span,
+                                "`started_by @desktop` without any `desktop` exe",
+                            )
+                            .note("e.g. `desktop \"/usr/bin/gnome-shell\"`"),
+                        );
+                    }
+                    Ok(SUBJECT_DESKTOP)
+                }
+                "@unconfined" => {
+                    diags.push(
+                        Diagnostic::warning(
+                            who.span,
+                            "`started_by @unconfined` lets any program start the app",
+                        )
+                        .note("every process that is no app is @unconfined, malware included"),
+                    );
+                    Ok(APP_UNCONFINED)
+                }
+                o if o.starts_with('@') => Err(Diagnostic::error(
+                    who.span,
+                    format!("unknown builtin `{o}`"),
+                )
+                .note("`started_by` takes apps, `@terminal`, `@desktop` and `@unconfined`")),
+                _ => app_id(who, &apps, "starting app"),
+            };
+            match id {
+                Ok(id) if id == apps[i].id => diags.push(Diagnostic::error(
+                    who.span,
+                    format!("{} always starts itself", who.value),
+                )),
+                Ok(id) => {
+                    if let Some(launcher) = apps.iter().find(|x| x.id == id).and_then(|x| {
+                        x.exes.iter().find(|e| {
+                            e.path.file_name().is_some_and(|n| {
+                                UNTRUSTED_LAUNCHERS.contains(&n.to_string_lossy().as_ref())
+                            })
+                        })
+                    }) {
+                        diags.push(
+                            Diagnostic::warning(
+                                who.span,
+                                format!(
+                                    "{} runs {}, which starts programs for anyone who asks",
+                                    who.value, launcher.text
+                                ),
+                            )
+                            .note("any process could have it start the app"),
+                        );
+                    }
+                    if !ids_of.contains(&id) {
+                        ids_of.push(id);
+                    }
+                }
+                Err(d) => diags.push(soften(d, &policy.lenient)),
+            }
+        }
+        apps[i].started_by = ids_of;
     }
 
     // Grants after every app, so files may grant to apps of later files.
@@ -639,10 +864,10 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         ),
         ("owned", "ROOTS", MAX_ROOTS as usize, roots.collect()),
         (
-            "terminal",
+            "terminal, shell and desktop",
             "TERMINALS",
             MAX_TERMINALS as usize,
-            terminals.iter().collect(),
+            terminals.iter().chain(&shells).chain(&desktops).collect(),
         ),
     ] {
         if let Some(d) = too_many_paths(what, map, cap, &pats) {
@@ -662,6 +887,8 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         apps,
         grants,
         terminals,
+        shells,
+        desktops,
         ids,
         warnings: diags,
     })
@@ -758,6 +985,31 @@ fn compile_app<'a>(
             Err(d) => diags.push(d),
         }
     }
+    let mut code_any = false;
+    for (i, c) in a.code.iter().enumerate() {
+        if i > 0 {
+            diags.push(
+                Diagnostic::error(c.span, format!("app {name} has more than one `code`"))
+                    .also(a.code[0].span, "first set here"),
+            );
+        }
+        match c.value.as_str() {
+            "trusted" => code_any = false,
+            "any" => code_any = true,
+            other => diags.push(
+                Diagnostic::error(c.span, format!("unknown `code` value `{other}`"))
+                    .note("`code trusted` (the default) or `code any`"),
+            ),
+        }
+    }
+    let mut deny_args = Vec::new();
+    for arg in &a.deny_args {
+        match check_arg(arg) {
+            Ok(()) if !deny_args.contains(&arg.value) => deny_args.push(arg.value.clone()),
+            Ok(()) => {}
+            Err(d) => diags.push(d),
+        }
+    }
     if diags.len() > before {
         return None;
     }
@@ -776,6 +1028,9 @@ fn compile_app<'a>(
         roots,
         inherit: !a.inherit.is_empty(),
         env,
+        code_any,
+        started_by: Vec::new(),
+        deny_args,
     })
 }
 
@@ -1003,6 +1258,75 @@ mod tests {
     }
 
     #[test]
+    fn started_by_code_and_deny_args() {
+        let c = compiled(
+            r#"terminal "/t"
+               shell "/bin/bash"
+               desktop "/usr/bin/gnome-shell"
+               app helper { exe "/h" }
+               app ssh {
+                   exe "/usr/bin/ssh"
+                   started_by @terminal, @desktop, helper, later
+                   deny_args "-I", "-oPKCS11Provider*"
+                   code any
+               }
+               app later { exe "/l" }"#,
+        );
+        let ssh = c.apps.iter().find(|a| a.name == "ssh").unwrap();
+        let (helper, later) = (c.ids.get("helper").unwrap(), c.ids.get("later").unwrap());
+        assert_eq!(
+            ssh.started_by,
+            [SUBJECT_TERMINAL, SUBJECT_DESKTOP, helper, later]
+        );
+        assert!(ssh.code_any);
+        assert_eq!(
+            ssh.flags(),
+            app_flag::CODE_ANY | app_flag::STARTED_BY | app_flag::DENY_ARGS
+        );
+        assert_eq!(c.started_by().count(), 4);
+        let keys: Vec<_> = c.deny_args().collect();
+        assert_eq!(keys[0].prefixlen, 32 + 8 * 3, "exact: with the NUL");
+        assert_eq!(&keys[0].val[..3], b"-I\0");
+        assert_eq!(keys[1].prefixlen, 32 + 8 * 16, "a prefix: without the `*`");
+        assert_eq!(&keys[1].val[..16], b"-oPKCS11Provider");
+        assert_eq!((c.shells.len(), c.desktops.len()), (1, 1));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+
+        let c = compiled(
+            r#"app systemd { exe "/usr/lib/systemd/systemd" }
+               app a { exe "/a" started_by systemd, @terminal }"#,
+        );
+        let w: Vec<_> = c.warnings.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(
+            w,
+            [
+                "systemd runs /usr/lib/systemd/systemd, which starts programs for anyone who asks",
+                "`started_by @terminal` without any `terminal` exe",
+                "`started_by @terminal` without any `shell` exe",
+            ]
+        );
+        assert_eq!(
+            errors("app a { exe \"/a\" started_by a }"),
+            ["a always starts itself"]
+        );
+        assert_eq!(
+            errors("app a { exe \"/a\" started_by @root }"),
+            ["unknown builtin `@root`"]
+        );
+        assert_eq!(
+            errors("app a { exe \"/a\" code sometimes }"),
+            ["unknown `code` value `sometimes`"]
+        );
+        assert_eq!(
+            errors("app a { exe \"/a\" deny_args \"*\", \"-a*b\" }"),
+            [
+                "an empty `deny_args` pattern would match every argument",
+                "a `deny_args` pattern is an argument, or a prefix ending in `*`",
+            ]
+        );
+    }
+
+    #[test]
     fn inherit_and_env() {
         let c = compiled(
             r#"app a {
@@ -1091,7 +1415,9 @@ mod tests {
         let text = format!("terminal {}", terminals.join(", "));
         assert_eq!(
             errors(&text),
-            [format!("too many terminal paths: at most {MAX_TERMINALS}")]
+            [format!(
+                "too many terminal, shell and desktop paths: at most {MAX_TERMINALS}"
+            )]
         );
     }
 

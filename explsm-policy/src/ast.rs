@@ -26,6 +26,10 @@ pub enum Item {
     Grant(Grant),
     /// `terminal "/usr/bin/konsole", …`
     Terminal(Vec<Spanned<String>>),
+    /// `shell "/usr/bin/bash", …`: exes that keep `@terminal` going.
+    Shell(Vec<Spanned<String>>),
+    /// `desktop "/usr/bin/gnome-shell", …`: the exes of `@desktop`.
+    Desktop(Vec<Spanned<String>>),
     /// `claim APP "PATH", …`
     Claim(Claim),
 }
@@ -47,6 +51,12 @@ pub struct App {
     pub inherit: Vec<Span>,
     /// `env "NAME=VALUE", …`: loader variables that keep the identity.
     pub env: Vec<Spanned<String>>,
+    /// Every `code trusted|any` line, so duplicates can be reported.
+    pub code: Vec<Spanned<String>>,
+    /// `started_by APP, @terminal, …`: who may start the app.
+    pub started_by: Vec<Spanned<String>>,
+    /// `deny_args "-I", "-oPKCS11Provider*", …`
+    pub deny_args: Vec<Spanned<String>>,
 }
 
 #[derive(Debug)]

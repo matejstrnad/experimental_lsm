@@ -9,21 +9,34 @@ use crate::{
     lexer::{Tok, lex},
 };
 
-const TOP_LEVEL: [&str; 9] = [
+const TOP_LEVEL: [&str; 11] = [
     "app",
     "grant",
     "claim",
     "terminal",
+    "shell",
+    "desktop",
     "root_bypass",
     "fail_closed",
     "require_sandbox",
     "require_dbus",
     "users",
 ];
-const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed`, \
-                            `require_sandbox`, `require_dbus` or `users`";
-const APP_BODY: [&str; 5] = ["exe", "owns", "mode", "inherit", "env"];
-const EXPECTED_APP: &str = "`exe`, `owns`, `mode`, `inherit`, `env` or `}`";
+const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `shell`, `desktop`, \
+                            `root_bypass`, `fail_closed`, `require_sandbox`, `require_dbus` \
+                            or `users`";
+const APP_BODY: [&str; 8] = [
+    "exe",
+    "owns",
+    "mode",
+    "inherit",
+    "env",
+    "code",
+    "started_by",
+    "deny_args",
+];
+const EXPECTED_APP: &str = "`exe`, `owns`, `mode`, `inherit`, `env`, `code`, `started_by`, \
+                            `deny_args` or `}`";
 
 /// Parse every file into one policy. Fails if any diagnostic is an error.
 pub fn parse(sources: &Sources) -> Result<Policy, Vec<Diagnostic>> {
@@ -217,6 +230,8 @@ impl Parser {
             "app" => self.app().map(Item::App),
             "grant" => self.grant(kw.span).map(Item::Grant),
             "terminal" => Ok(Item::Terminal(self.list(|p| p.string("an exe path"))?)),
+            "shell" => Ok(Item::Shell(self.list(|p| p.string("an exe path"))?)),
+            "desktop" => Ok(Item::Desktop(self.list(|p| p.string("an exe path"))?)),
             "claim" => {
                 let app = self.word("an app name")?;
                 let paths = self.list(|p| p.string("a path"))?;
@@ -250,6 +265,9 @@ impl Parser {
             modes: Vec::new(),
             inherit: Vec::new(),
             env: Vec::new(),
+            code: Vec::new(),
+            started_by: Vec::new(),
+            deny_args: Vec::new(),
         };
         loop {
             if self.eat(&Tok::RBrace) {
@@ -303,6 +321,20 @@ impl Parser {
             "env" => {
                 let vars = self.list(|p| p.string("a `NAME=VALUE` string"))?;
                 app.env.extend(vars);
+            }
+            "code" => app.code.push(self.word("`trusted` or `any`")?),
+            "started_by" => {
+                let who = self.list(|p| {
+                    p.party(
+                        "an app name, `@terminal`, `@desktop` or `@unconfined`",
+                        false,
+                    )
+                })?;
+                app.started_by.extend(who);
+            }
+            "deny_args" => {
+                let args = self.list(|p| p.string("an argument pattern"))?;
+                app.deny_args.extend(args);
             }
             _ => {
                 self.pos -= 1;
@@ -462,9 +494,11 @@ mod tests {
         assert_eq!(
             e,
             [
-                "expected `app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed`, \
-                 `require_sandbox`, `require_dbus` or `users`, found `bogus`",
-                "expected `exe`, `owns`, `mode`, `inherit`, `env` or `}`, found `frobnicate`",
+                "expected `app`, `grant`, `claim`, `terminal`, `shell`, `desktop`, \
+                 `root_bypass`, `fail_closed`, `require_sandbox`, `require_dbus` or `users`, \
+                 found `bogus`",
+                "expected `exe`, `owns`, `mode`, `inherit`, `env`, `code`, `started_by`, \
+                 `deny_args` or `}`, found `frobnicate`",
                 "grant without permissions",
                 "expected `on`, `off` or `audit`, found `maybe`",
                 "expected `,` or `to`, found `b`",
