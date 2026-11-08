@@ -169,14 +169,11 @@ fn verifier_tail(e: ProgramError) -> anyhow::Error {
     }
 }
 
-/// Load and attach `prog`, keep its link, and note the ids of both.
-fn attach(
-    ebpf: &mut Ebpf,
-    btf: &Btf,
-    pins: &mut pin::Pins,
-    own: &mut HashMap<OwnKey, u32>,
-    prog: &str,
-) -> Result<()> {
+/// Programs that give processes their identity. Attached before seeding.
+const IDENTITY_HOOKS: &[&str] = &["task_alloc", "bprm_committed_creds"];
+
+/// Load `prog` and have the verifier check it, and note its id.
+fn load(ebpf: &mut Ebpf, btf: &Btf, own: &mut HashMap<OwnKey, u32>, prog: &str) -> Result<()> {
     let p: &mut Lsm = ebpf
         .program_mut(prog)
         .with_context(|| format!("program {prog} missing"))?
@@ -184,13 +181,37 @@ fn attach(
     p.load(prog, btf)
         .map_err(verifier_tail)
         .with_context(|| format!("loading {prog}"))?;
-    let link = p.attach().with_context(|| format!("attaching {prog}"))?;
     let id = p.info()?.id();
     own.insert(OwnKey { kind: own_kind::PROG, id }, 1);
-    let link = FdLink::from(p.take_link(link)?);
-    let id = pins.link(prog, link)?;
-    own.insert(OwnKey { kind: own_kind::LINK, id }, 1);
     Ok(())
+}
+
+/// Attach the loaded `progs` and keep their links, all or none: on an error
+/// the links of this batch are detached and the old pins stay.
+fn attach_all(
+    ebpf: &mut Ebpf,
+    pins: &mut pin::Pins,
+    own: &mut HashMap<OwnKey, u32>,
+    progs: &[&str],
+) -> Result<()> {
+    let mut stage = || -> Result<()> {
+        for prog in progs {
+            let p: &mut Lsm = ebpf
+                .program_mut(prog)
+                .with_context(|| format!("program {prog} missing"))?
+                .try_into()?;
+            let link = p.attach().with_context(|| format!("attaching {prog}"))?;
+            let link = FdLink::from(p.take_link(link)?);
+            let id = pins.stage(prog, link)?;
+            own.insert(OwnKey { kind: own_kind::LINK, id }, 1);
+        }
+        Ok(())
+    };
+    if let Err(e) = stage() {
+        pins.abort();
+        return Err(e);
+    }
+    pins.commit()
 }
 
 /// Refuse maps pinned by a build of another layout.
@@ -243,6 +264,77 @@ fn unload_standalone(cli: &Cli) -> Result<()> {
         )),
         Err(e) => Err(e).with_context(|| format!("removing {}", cli.pin_dir.display())),
     }
+}
+
+/// Load the object into the pins, fill the maps from the policy, then load
+/// and attach the programs.
+fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
+    let reused = pins.reused();
+    // TASK_STORAGE has no Aya userspace type yet; it still loads as an
+    // "unsupported" map, which is all the programs need.
+    let mut ebpf = EbpfLoader::new()
+        .allow_unsupported_maps()
+        .default_map_pin_directory(&pins.dir)
+        .load(EXPLSM)
+        .with_context(|| {
+            format!(
+                "loading explsm object{}",
+                if reused {
+                    " (into the pinned maps; if access is denied, this explsmd is not the \
+                     installed one: `explsmctl unload` or reboot)"
+                } else {
+                    ""
+                }
+            )
+        })?;
+    check_layout(&mut ebpf, &pins.dir)?;
+    // Every program is verified before the first is attached, and before
+    // the maps (maybe a running predecessor's) are written to, so one the
+    // kernel refuses changes nothing.
+    let btf = Btf::from_sys_fs()?;
+    let mut own = HashMap::new();
+    for prog in IDENTITY_HOOKS.iter().chain(ACCESS_HOOKS) {
+        load(&mut ebpf, &btf, &mut own, prog)?;
+    }
+    for id in pins.map_ids()? {
+        own.insert(OwnKey { kind: own_kind::MAP, id }, 1);
+    }
+    // Fills the maps and labels the roots, before the xattr hooks are
+    // attached (they would let the daemon through anyway).
+    let mut state = State::new(
+        ebpf,
+        Options {
+            policy: cli.policy.clone(),
+            claims: Some(cli.claims.clone()),
+            agent: cli.agent.clone(),
+            no_root_bypass: cli.no_root_bypass,
+            daemon,
+            state_dir: cli.state_dir.clone(),
+            pin_dir: pins.dir.clone(),
+            self_protect: !cli.no_self_protect,
+            reused,
+            log_execs: cli.log_execs,
+        },
+    )?;
+    eprintln!("explsmd: policy loaded: {}", state.summary());
+
+    attach_all(&mut state.ebpf, pins, &mut own, IDENTITY_HOOKS)?;
+    if cli.no_seed {
+        // The daemon itself needs its identity for its own files.
+        let me: HashMap<_, _> = state
+            .exes()
+            .into_iter()
+            .filter(|(_, app)| *app == explsm_common::APP_DAEMON)
+            .collect();
+        state.seed(&me)?;
+    } else {
+        state.seed(&state.exes())?;
+        state.seed_terminals()?;
+        state.seeding = true;
+    }
+    attach_all(&mut state.ebpf, pins, &mut own, ACCESS_HOOKS)?;
+    state.set_own_ids(&own)?;
+    Ok(state)
 }
 
 fn reload(state: &mut State) -> explsm_ipc::ReloadReply {
@@ -309,67 +401,19 @@ async fn main() -> Result<()> {
     };
     let mut pins = pin::Pins::new(pin_dir, !cli.no_pin)?;
     let reused = pins.reused();
-    // TASK_STORAGE has no Aya userspace type yet; it still loads as an
-    // "unsupported" map, which is all the programs need.
-    let mut ebpf = EbpfLoader::new()
-        .allow_unsupported_maps()
-        .default_map_pin_directory(&pins.dir)
-        .load(EXPLSM)
-        .with_context(|| {
-            format!(
-                "loading explsm object{}",
-                if reused {
-                    " (into the pinned maps; if access is denied, this explsmd is not the \
-                     installed one: `explsmctl unload` or reboot)"
-                } else {
-                    ""
-                }
-            )
-        })?;
-    check_layout(&mut ebpf, &pins.dir)?;
-    let mut own = HashMap::new();
-    for id in pins.map_ids()? {
-        own.insert(OwnKey { kind: own_kind::MAP, id }, 1);
-    }
-    // Fills the maps and labels the roots, before the xattr hooks are
-    // attached (they would let the daemon through anyway).
-    let mut state = State::new(
-        ebpf,
-        Options {
-            policy: cli.policy.clone(),
-            claims: Some(cli.claims.clone()),
-            agent: cli.agent.clone(),
-            no_root_bypass: cli.no_root_bypass,
-            daemon,
-            state_dir: cli.state_dir.clone(),
-            pin_dir: pins.dir.clone(),
-            self_protect: !cli.no_self_protect,
-            reused,
-            log_execs: cli.log_execs,
-        },
-    )?;
-    eprintln!("explsmd: policy loaded: {}", state.summary());
-
-    let btf = Btf::from_sys_fs()?;
-    attach(&mut state.ebpf, &btf, &mut pins, &mut own, "task_alloc")?;
-    attach(&mut state.ebpf, &btf, &mut pins, &mut own, "bprm_committed_creds")?;
-    if cli.no_seed {
-        // The daemon itself needs its identity for its own files.
-        let me: HashMap<_, _> = state
-            .exes()
-            .into_iter()
-            .filter(|(_, app)| *app == explsm_common::APP_DAEMON)
-            .collect();
-        state.seed(&me)?;
-    } else {
-        state.seed(&state.exes())?;
-        state.seed_terminals()?;
-        state.seeding = true;
-    }
-    for prog in ACCESS_HOOKS {
-        attach(&mut state.ebpf, &btf, &mut pins, &mut own, prog)?;
-    }
-    state.set_own_ids(&own)?;
+    let mut state = match start(&cli, &mut pins, daemon) {
+        Ok(started) => started,
+        Err(e) => {
+            // Remove what this start pinned. Pins taken over from an earlier
+            // daemon stay: they enforce the policy it loaded.
+            if (!reused || !pins.keep)
+                && let Err(u) = pin::unload(&pins.dir)
+            {
+                eprintln!("explsmd: warning: removing {}: {u}", pins.dir.display());
+            }
+            return Err(e);
+        }
+    };
     // Forked while there is one thread and no signal handler yet.
     if !cli.no_landlock
         && let Err(e) = procs::start()

@@ -3,9 +3,11 @@
 //!
 //! Maps are pinned by name (`pinning` in their BTF definitions) and reused by
 //! the next load; `CONFIG[CFG_LAYOUT]` tells whether they are of the same
-//! layout. Each program's link is pinned as `link-<prog>`. A new link
-//! replaces the old one by a rename, so the old program stays attached until
-//! the new one is. Removing the pins detaches everything.
+//! layout. Each program's link is pinned as `link-<prog>`. New links are
+//! first pinned under a temporary name and replace the old ones by a rename
+//! only once every link of the batch is attached, so the old programs stay
+//! attached until the new ones are, and a batch that fails is undone
+//! without touching the old pins. Removing the pins detaches everything.
 //!
 //! Only the daemon may change the pin directory (`OWNER_PINS`) or get file
 //! descriptors for explsm's objects (`OWN_IDS`), root included.
@@ -32,6 +34,8 @@ pub struct Pins {
     pub keep: bool,
     /// Links that are not pinned.
     held: Vec<FdLink>,
+    /// Programs whose links are pinned under their temporary name.
+    staged: Vec<String>,
 }
 
 impl Pins {
@@ -41,6 +45,7 @@ impl Pins {
             dir,
             keep,
             held: Vec::new(),
+            staged: Vec::new(),
         })
     }
 
@@ -49,22 +54,43 @@ impl Pins {
         self.dir.join("CONFIG").exists()
     }
 
-    /// Keep the link of `prog` attached; returns its id.
-    pub fn link(&mut self, prog: &str, link: FdLink) -> Result<u32> {
+    /// Keep the link of `prog` attached, pinned under a temporary name until
+    /// `commit`; returns its id.
+    pub fn stage(&mut self, prog: &str, link: FdLink) -> Result<u32> {
         let id = link.info().with_context(|| format!("link of {prog}"))?.id();
         if !self.keep {
             self.held.push(link);
             return Ok(id);
         }
-        let path = self.dir.join(link_name(prog));
-        // bpffs refuses names with a dot.
-        let tmp = self.dir.join(format!("{}-new", link_name(prog)));
+        let tmp = self.tmp_path(prog);
         let _ = fs::remove_file(&tmp);
         // Dropping the PinnedLink closes our fd; the pin keeps the link.
         link.pin(&tmp)
             .with_context(|| format!("pinning the link of {prog}"))?;
-        fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
+        self.staged.push(prog.to_owned());
         Ok(id)
+    }
+
+    /// Put the staged links in place of the old ones.
+    pub fn commit(&mut self) -> Result<()> {
+        for prog in std::mem::take(&mut self.staged) {
+            let path = self.dir.join(link_name(&prog));
+            fs::rename(self.tmp_path(&prog), &path)
+                .with_context(|| format!("replacing {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Detach the staged links; the old pins stay.
+    pub fn abort(&mut self) {
+        for prog in std::mem::take(&mut self.staged) {
+            let _ = fs::remove_file(self.tmp_path(&prog));
+        }
+    }
+
+    // bpffs refuses names with a dot.
+    fn tmp_path(&self, prog: &str) -> PathBuf {
+        self.dir.join(format!("{}-new", link_name(prog)))
     }
 
     /// Ids of the pinned maps.

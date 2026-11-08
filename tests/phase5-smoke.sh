@@ -3,7 +3,8 @@
 # /proc/<pid>/{mem,environ} of app processes, user-writable app exes and
 # the directories above them, atomic saves of an owned file, forced truncates,
 # pinning (explsm stays loaded when the daemon exits, the next one takes
-# over, unload removes it), the bpf() restrictions and explsm's own files.
+# over, a start that fails leaves the earlier pins or none, unload removes
+# it), the bpf() restrictions and explsm's own files.
 #
 # Runs explsmd from a copy in a throwaway sandbox in /var/tmp, pinned in
 # /sys/fs/bpf/explsm-smoke5 (not the real pin directory). Must run as root;
@@ -100,6 +101,12 @@ start() { # extra args
     daemon=$!
     wait_err attached || { echo "explsmd did not start:"; cat "$ERR"; exit 1; }
 }
+fail_start() { # policy file: a start that must fail
+    "$EXPLSMD" --policy "$1" --claims "$DIR/claims.d" --agent "$DIR/no-agent" \
+        --state-dir "$DIR/state" --pin-dir "$PIN" --daemon "$EXPLSMD" >> "$OUT" 2> "$ERR"
+    [[ $? -ne 0 ]]
+}
+echo 'app broken {' > "$DIR/broken.explsm"
 stop() { # signal
     [[ -n $daemon ]] || return 0
     kill "-$1" "$daemon" 2> /dev/null; wait "$daemon" 2> /dev/null; daemon=
@@ -243,6 +250,12 @@ rc=$?
 check "with no daemon, enforcement goes on" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
 nobody "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "… and apps started meanwhile keep their identity" $? ""
+fail_start "$DIR/broken.explsm"
+check "a start with a broken policy fails" $? "$(tail -3 "$ERR")"
+nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1
+rc=$?
+check "… and leaves the pins it found enforcing" \
+    "$([[ $rc -ne 0 && -e $PIN/link-file_open ]]; echo $?)" "rc=$rc $(ls "$PIN" 2>&1)"
 
 start
 grep -q "took over the pinned state" "$ERR"
@@ -263,6 +276,9 @@ else
 fi
 nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "after unload, nothing is enforced" $? ""
+fail_start "$DIR/broken.explsm"
+check "a first start that fails pins nothing" "$([[ $? -eq 0 && ! -e $PIN ]]; echo $?)" \
+    "$(ls "$PIN" 2>&1) $(tail -3 "$ERR")"
 
 # --- self-protection, bypass off ----------------------------------------------
 start --no-root-bypass
