@@ -305,26 +305,43 @@ static __always_inline struct file_key file_key(struct inode *inode)
 	return (struct file_key){ .dev = inode->i_sb->s_dev, .ino = inode->i_ino };
 }
 
-static __always_inline struct file_key dentry_key(struct dentry *d)
+/* Key of d's inode into out; 0 for a negative dentry (or one that can't be
+ * read). Read with bpf_probe_read_kernel, never as d->d_inode: 6.9 takes
+ * d_inode of a trusted dentry for non-NULL, drops the NULL check as dead
+ * code and faults on a negative dentry with a plain load. */
+static __always_inline int positive_key(struct dentry *d, struct file_key *out)
 {
-	struct inode *ino = d->d_inode;
-	/* Not created yet: the device still names the filesystem. */
-	if (!ino)
-		return (struct file_key){ .dev = d->d_sb->s_dev };
-	return file_key(ino);
+	struct inode *ino = NULL;
+	struct super_block *sb = NULL;
+	unsigned long i_ino = 0;
+	dev_t dev = 0;
+	if (bpf_probe_read_kernel(&ino, sizeof(ino), &d->d_inode) || !ino)
+		return 0;
+	if (bpf_probe_read_kernel(&sb, sizeof(sb), &ino->i_sb) || !sb ||
+	    bpf_probe_read_kernel(&i_ino, sizeof(i_ino), &ino->i_ino) ||
+	    bpf_probe_read_kernel(&dev, sizeof(dev), &sb->s_dev))
+		return 0;
+	out->dev = dev;
+	out->_pad = 0;
+	out->ino = i_ino;
+	return 1;
 }
 
-static __always_inline app_id *root_of(struct inode *ino)
+/* Key of the object at d, which may be a negative dentry: then the device
+ * still names the filesystem. */
+static __always_inline struct file_key dentry_key(struct dentry *d)
 {
-	struct file_key key = file_key(ino);
-	return bpf_map_lookup_elem(&ROOTS, &key);
+	struct file_key key = {};
+	if (!positive_key(d, &key))
+		key.dev = d->d_sb->s_dev;
+	return key;
 }
 
 /* Whether d is itself in ROOTS (a root, or a tracked hard link). */
 static __always_inline int is_root(struct dentry *d)
 {
-	struct inode *ino = d->d_inode;
-	return ino && root_of(ino);
+	struct file_key key;
+	return positive_key(d, &key) && bpf_map_lookup_elem(&ROOTS, &key);
 }
 
 static __always_inline app_id current_app(void)
@@ -463,9 +480,9 @@ static __always_inline app_id walk_owner(struct dentry *d)
 {
 	struct dentry *cur = d;
 	for (int i = 0; i < WALK_INLINE; i++) {
-		struct inode *ino = cur->d_inode;
-		if (ino) {
-			app_id *owner = root_of(ino);
+		struct file_key key;
+		if (positive_key(cur, &key)) {
+			app_id *owner = bpf_map_lookup_elem(&ROOTS, &key);
 			if (owner)
 				return *owner;
 		}
@@ -507,9 +524,9 @@ static __always_inline app_id owner_cached(struct inode *ino, struct dentry *d)
  * d's parent): the directory's owner, unless d is itself in ROOTS. */
 static __always_inline app_id owner_in(struct inode *dir, struct dentry *d)
 {
-	struct inode *ino = d->d_inode;
-	if (ino) {
-		app_id *owner = root_of(ino);
+	struct file_key key;
+	if (positive_key(d, &key)) {
+		app_id *owner = bpf_map_lookup_elem(&ROOTS, &key);
 		if (owner)
 			return *owner;
 	}
@@ -820,10 +837,9 @@ static __always_inline int exe_dir(struct inode *dir, struct dentry *d)
  * user-writable app exe, only that app may. */
 static __always_inline int exe_path(struct dentry *d)
 {
-	struct inode *ino = d->d_inode;
-	if (!ino)
+	struct file_key key;
+	if (!positive_key(d, &key))
 		return 0;
-	struct file_key key = file_key(ino);
 	return exe_guard(bpf_map_lookup_elem(&EXE_PATHS, &key), d);
 }
 
@@ -1248,8 +1264,8 @@ int LSM_PROG(inode_rename, struct inode *old_dir, struct dentry *old, struct ino
 		}
 	}
 	/* Replacing an existing target deletes it. */
-	struct inode *target = new->d_inode;
-	if (target) {
+	struct file_key target;
+	if (positive_key(new, &target)) {
 		app_id victim = owner_in(new_dir, new);
 		lacking = missing(subject, victim, PERM_DELETE);
 		if (lacking) {
@@ -1260,10 +1276,10 @@ int LSM_PROG(inode_rename, struct inode *old_dir, struct dentry *old, struct ino
 		/* A root replaced by a rename (an atomic save of an owned file):
 		 * what takes its place is the root from now on, not only after
 		 * the daemon has resolved the path again. */
-		app_id *replaced = root_of(target);
-		struct inode *src = old->d_inode;
-		if (replaced && src && !root_of(src)) {
-			struct file_key key = file_key(src);
+		app_id *replaced = bpf_map_lookup_elem(&ROOTS, &target);
+		struct file_key key;
+		if (replaced && positive_key(old, &key) &&
+		    !bpf_map_lookup_elem(&ROOTS, &key)) {
 			app_id owner = *replaced;
 			if (!bpf_map_update_elem(&ROOTS, &key, &owner, BPF_ANY))
 				bump_generation();
