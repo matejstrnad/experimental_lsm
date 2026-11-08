@@ -62,7 +62,10 @@ jobs:
             util-linux bsdextrautils linux-tools-common "linux-tools-$(uname -r)"
           # The bpftool wrapper picks a binary by `uname -r`, which is the
           # guest's kernel in the VM: put the real one first in PATH.
-          sudo install -m755 "$(find /usr/lib/linux-tools* -name bpftool -type f | head -1)" /usr/local/bin/bpftool
+          bpftool=$(find /usr/lib -path '*tools*' -name bpftool -type f | head -1)
+          [ -n "$bpftool" ] || { echo "no bpftool binary found"; exit 1; }
+          sudo install -m755 "$bpftool" /usr/local/bin/bpftool
+          bpftool version
           sudo pip install --break-system-packages virtme-ng==1.42
           vng --version
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
