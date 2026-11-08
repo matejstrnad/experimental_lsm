@@ -17,6 +17,8 @@
 #   --timeout SECS per test, passed to run-all.sh (default 1200)
 #   --dry-run      print the vng command instead of running it
 #
+# The logs of each test end up in target/vm-smoke-logs/.
+#
 # TEST names are passed to tests/run-all.sh (see `tests/run-all.sh --list`).
 # Exits with run-all.sh's status: 0 if every test passed.
 
@@ -48,7 +50,7 @@ while (($#)); do
     shift
 done
 
-[[ $EUID -ne 0 ]] || { echo "run this as a normal user; the tests run as root in the VM" >&2; exit 2; }
+[[ $EUID -ne 0 || ${VM_SMOKE_AS_ROOT:-0} -eq 1 ]] || { echo "run this as a normal user; the tests run as root in the VM" >&2; exit 2; }
 command -v vng > /dev/null || {
     echo "virtme-ng (vng) is not installed: sudo apt install virtme-ng" >&2
     echo "(or pip install virtme-ng; it also needs qemu-system-x86 and virtiofsd)" >&2
@@ -105,8 +107,10 @@ fi
 # /tmp and friends with writable copies in guest memory; /var/tmp and /root
 # are tmpfs. So the tests can write where they need to, and none of it
 # reaches the host.
-inner=$(printf '%q ' "$ROOT/tests/run-all.sh" "${run_args[@]}")
-cmd=(vng --run "${vng_kernel[@]}" --user root --cwd "$ROOT"
+logs=$ROOT/target/vm-smoke-logs
+rm -rf "$logs" && mkdir -p "$logs" || exit 2
+inner=$(printf '%q ' "$ROOT/tests/run-all.sh" --logs "$logs" "${run_args[@]}")
+cmd=(vng --run "${vng_kernel[@]}" --user root --cwd "$ROOT" --rwdir "$logs"
     --cpus "$CPUS" --memory "$MEMORY" --append "lsm=$lsm"
     "${vng_opts[@]}" --exec "$inner")
 echo "== ${cmd[*]}"
