@@ -37,6 +37,9 @@ pub const MAX_TERMINALS: u32 = 256;
 /// Entries of `DENY_ARGS`: `deny_args` patterns of all apps together.
 pub const MAX_DENY_ARGS: u32 = 256;
 
+/// Most distinct lengths of the prefix patterns of one app (`ARG_LENS`).
+pub const MAX_ARG_LENS: usize = 8;
+
 /// Values of the `TERMINALS` map: what kind of exe it is.
 pub mod term {
     /// A terminal entry exe (`terminal`): sets [`TF_TERMINAL`](super::TF_TERMINAL)
@@ -233,15 +236,23 @@ pub struct StartKey {
     pub spawner: AppId,
 }
 
-/// Key of the `DENY_ARGS` LPM trie: a `deny_args` pattern of `app`.
-/// `prefixlen` counts the bits of `app` (32) and of `val`: an exact pattern
-/// with its NUL, a prefix pattern (`-o*`) without.
+/// Key of the `DENY_ARGS` map: a `deny_args` pattern of `app`, the first
+/// `len` bytes of `val` (zero after them): an exact pattern with its NUL, a
+/// prefix pattern (`-o*`) without.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ArgKey {
-    pub prefixlen: u32,
+    pub len: u32,
     pub app: AppId,
     pub val: [u8; ENV_CHUNK],
+}
+
+/// Value of the `ARG_LENS` array: the lengths of an app's prefix patterns,
+/// 0 after the last.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ArgLens {
+    pub len: [u8; MAX_ARG_LENS],
 }
 
 /// Bytes of an `ALLOWED_ENV` string, with the NUL padding.
@@ -615,6 +626,7 @@ const _: () = {
     assert!(size_of::<EnvKey>() == 132);
     assert!(size_of::<StartKey>() == 8);
     assert!(size_of::<ArgKey>() == 136);
+    assert!(size_of::<ArgLens>() == 8);
 };
 
 #[cfg(test)]
@@ -683,4 +695,5 @@ mod user {
     unsafe impl aya::Pod for EnvKey {}
     unsafe impl aya::Pod for StartKey {}
     unsafe impl aya::Pod for ArgKey {}
+    unsafe impl aya::Pod for ArgLens {}
 }

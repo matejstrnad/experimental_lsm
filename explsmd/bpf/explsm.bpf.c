@@ -221,15 +221,24 @@ struct {
 	__type(value, u32);
 } STARTED_BY SEC(".maps");
 
-/* deny_args patterns of AF_DENY_ARGS apps, matched against each argument. */
+/* deny_args patterns of AF_DENY_ARGS apps, matched against each argument.
+ * A hash, not an LPM trie, which sleepable programs can't use (6.9). */
 struct {
-	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__uint(max_entries, MAX_DENY_ARGS);
 	__type(key, struct arg_key);
 	__type(value, u32);
 } DENY_ARGS SEC(".maps");
+
+/* App id -> the lengths of its prefix patterns in DENY_ARGS. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, MAX_APPS);
+	__type(key, u32);
+	__type(value, struct arg_lens);
+} ARG_LENS SEC(".maps");
 
 /* explsm's own maps, programs and links by id: only the daemon may get a
  * file descriptor for them. */
@@ -992,6 +1001,8 @@ struct arg_scan {
 	u32 argc;
 	u32 found;
 	u32 _pad;
+	struct arg_lens lens;
+	char buf[ENV_CHUNK];
 	struct arg_key key;
 };
 
@@ -1002,18 +1013,35 @@ static long arg_step(u64 index, void *data)
 	struct arg_scan *s = data;
 	if (s->idx >= s->argc || s->pos >= s->end)
 		return 1;
-	__builtin_memset(s->key.val, 0, ENV_CHUNK);
-	long n = bpf_probe_read_user_str(s->key.val, ENV_CHUNK, (void *)s->pos);
+	__builtin_memset(s->buf, 0, ENV_CHUNK);
+	long n = bpf_probe_read_user_str(s->buf, ENV_CHUNK, (void *)s->pos);
 	if (n <= 0)
 		return 1;
-	s->key.prefixlen = 32 + 8 * (u32)n;
+	/* The whole argument, for exact patterns. */
+	__builtin_memcpy(s->key.val, s->buf, ENV_CHUNK);
+	s->key.len = n;
 	if (bpf_map_lookup_elem(&DENY_ARGS, &s->key)) {
 		s->found = 1;
 		return 1;
 	}
+	/* Its first bytes, for each length of a prefix pattern. */
+	for (int i = 0; i < MAX_ARG_LENS; i++) {
+		u32 len = s->lens.len[i];
+		if (!len || len >= ENV_CHUNK)
+			break;
+		if (len >= n)
+			continue;
+		__builtin_memset(s->key.val, 0, ENV_CHUNK);
+		bpf_probe_read_kernel(s->key.val, len & (ENV_CHUNK - 1), s->buf);
+		s->key.len = len;
+		if (bpf_map_lookup_elem(&DENY_ARGS, &s->key)) {
+			s->found = 1;
+			return 1;
+		}
+	}
 	if (n == ENV_CHUNK) {
 		/* Skip the rest of a long argument. */
-		long m = bpf_probe_read_user_str(s->key.val, ENV_CHUNK,
+		long m = bpf_probe_read_user_str(s->buf, ENV_CHUNK,
 						 (void *)(s->pos + ENV_CHUNK - 1));
 		/* Longer still: give up on the rest of argv. */
 		if (m <= 0 || m == ENV_CHUNK)
@@ -1035,6 +1063,9 @@ static __attribute__((noinline)) int denied_arg(struct linux_binprm *bprm, app_i
 		.argc = bprm->argc,
 		.key.app = app,
 	};
+	struct arg_lens *lens = bpf_map_lookup_elem(&ARG_LENS, &app);
+	if (lens)
+		s.lens = *lens;
 	bpf_loop(ARG_STEPS, arg_step, &s, 0);
 	return s.found;
 }
@@ -1237,7 +1268,7 @@ int LSM_PROG(task_alloc, struct task_struct *child, u64 clone_flags, int retval)
 /* Names from d up, like name_chain, for a d that is no trusted pointer. */
 static __always_inline void probe_chain(struct ev_path *out, struct dentry *d)
 {
-	u32 off = 0;
+	u64 off = 0;
 	u32 kind = PATH_CHAIN;
 	for (int i = 0; i < MAX_CHAIN; i++) {
 		struct dentry *parent = NULL;

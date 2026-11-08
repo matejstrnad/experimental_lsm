@@ -6,9 +6,9 @@ use std::{
 };
 
 use explsm_common::{
-    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ArgKey, ENV_CHUNK, EnvKey, GrantKey,
-    MAX_ALLOWED_ENV, MAX_DENY_ARGS, MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT,
-    MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_DESKTOP, SUBJECT_ROOT,
+    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ArgKey, ArgLens, ENV_CHUNK, EnvKey, GrantKey,
+    MAX_ALLOWED_ENV, MAX_ARG_LENS, MAX_DENY_ARGS, MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS,
+    MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_DESKTOP, SUBJECT_ROOT,
     SUBJECT_TERMINAL, StartKey, app_flag, perm, root_bypass,
 };
 
@@ -498,11 +498,33 @@ impl Compiled {
                 // check_arg keeps them shorter than a chunk.
                 val[..body.len()].copy_from_slice(body.as_bytes());
                 ArgKey {
-                    prefixlen: 32 + 8 * len as u32,
+                    len: len as u32,
                     app: a.id,
                     val,
                 }
             })
+        })
+    }
+
+    /// App id → value of the `ARG_LENS` array, for every id ever assigned:
+    /// the distinct lengths of its prefix patterns, longest first.
+    pub fn arg_lens(&self) -> impl Iterator<Item = (AppId, ArgLens)> + '_ {
+        self.ids.ids().map(|id| {
+            let mut out = ArgLens::default();
+            if let Some(app) = self.app(id) {
+                let mut lens: Vec<usize> = app
+                    .deny_args
+                    .iter()
+                    .filter_map(|p| p.strip_suffix('*').map(str::len))
+                    .collect();
+                lens.sort_unstable_by(|a, b| b.cmp(a));
+                lens.dedup();
+                // compile_app keeps them to MAX_ARG_LENS.
+                for (slot, len) in out.len.iter_mut().zip(lens) {
+                    *slot = len as u8;
+                }
+            }
+            (id, out)
         })
     }
 
@@ -1050,9 +1072,29 @@ fn compile_app<'a>(
         }
     }
     let mut deny_args = Vec::new();
+    let mut prefix_lens = Vec::new();
     for arg in &a.deny_args {
         match check_arg(arg) {
-            Ok(()) if !deny_args.contains(&arg.value) => deny_args.push(arg.value.clone()),
+            Ok(()) if !deny_args.contains(&arg.value) => {
+                if let Some(body) = arg.value.strip_suffix('*')
+                    && !prefix_lens.contains(&body.len())
+                {
+                    prefix_lens.push(body.len());
+                    if prefix_lens.len() == MAX_ARG_LENS + 1 {
+                        diags.push(
+                            Diagnostic::error(
+                                arg.span,
+                                format!(
+                                    "app {name} has prefix patterns of more than \
+                                     {MAX_ARG_LENS} lengths"
+                                ),
+                            )
+                            .note("each length is a lookup for every argument of every exec"),
+                        );
+                    }
+                }
+                deny_args.push(arg.value.clone());
+            }
             Ok(()) => {}
             Err(d) => diags.push(d),
         }
@@ -1333,9 +1375,12 @@ mod tests {
         );
         assert_eq!(c.started_by().count(), 4);
         let keys: Vec<_> = c.deny_args().collect();
-        assert_eq!(keys[0].prefixlen, 32 + 8 * 3, "exact: with the NUL");
+        assert_eq!(keys[0].len, 3, "exact: with the NUL");
         assert_eq!(&keys[0].val[..3], b"-I\0");
-        assert_eq!(keys[1].prefixlen, 32 + 8 * 16, "a prefix: without the `*`");
+        assert_eq!(keys[1].len, 16, "a prefix: without the `*`");
+        let ssh_id = ssh.id;
+        let lens = c.arg_lens().find(|(id, _)| *id == ssh_id).unwrap().1;
+        assert_eq!(lens.len[..2], [16, 0]);
         assert_eq!(&keys[1].val[..16], b"-oPKCS11Provider");
         assert_eq!((c.shells.len(), c.desktops.len()), (1, 1));
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);

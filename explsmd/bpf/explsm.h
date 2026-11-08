@@ -22,6 +22,8 @@ typedef u32 app_id;
 #define MAX_ROOTS 65536
 #define MAX_TERMINALS 256
 #define MAX_DENY_ARGS 256
+/* Most distinct lengths of the prefix patterns of one app. */
+#define MAX_ARG_LENS 8
 #define APP_AGENT (MAX_APPS - 1)
 #define APP_DAEMON (MAX_APPS - 2)
 #define OWNER_PINS (MAX_APPS - 3)
@@ -213,12 +215,18 @@ struct env_key {
 	char val[ENV_CHUNK];
 };
 
-/* Key of DENY_ARGS, an LPM trie: an app and an argument. A pattern ends in
- * its NUL (exact) or not (a prefix); prefixlen counts the app's bits too. */
+/* Key of DENY_ARGS: an app and the first len bytes of an argument, zero
+ * after them. An exact pattern counts its NUL, a prefix pattern does not. */
 struct arg_key {
-	u32 prefixlen;
+	u32 len;
 	app_id app;
 	char val[ENV_CHUNK];
+};
+
+/* Value of ARG_LENS: the lengths of an app's prefix patterns, 0 after the
+ * last. */
+struct arg_lens {
+	u8 len[MAX_ARG_LENS];
 };
 
 /* Key of STARTED_BY: an app and a subject that may start it (an app id,
@@ -282,6 +290,7 @@ _Static_assert(sizeof(struct event) == 1176, "event layout");
 _Static_assert(sizeof(struct temp_key) == 32, "temp_key layout");
 _Static_assert(sizeof(struct env_key) == 132, "env_key layout");
 _Static_assert(sizeof(struct arg_key) == 136, "arg_key layout");
+_Static_assert(sizeof(struct arg_lens) == 8, "arg_lens layout");
 _Static_assert(sizeof(struct start_key) == 8, "start_key layout");
 
 #endif
