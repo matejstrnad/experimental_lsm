@@ -12,7 +12,35 @@ use std::{
 
 use explsm_common::{APP_UNCONFINED, AppId, FileKey, term};
 
-use crate::{Compiled, PathPat, env_paths, users::User};
+use sha2::{Digest as _, Sha256};
+
+use crate::{Compiled, PathPat, compile::Pin, env_paths, parse_sha256, users::User};
+
+/// The SHA-256 of a file's contents.
+pub fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    io::copy(&mut file, &mut hasher)?;
+    Ok(hasher.finalize().into())
+}
+
+/// Whether the file at `path` has one of the hashes `pin` allows. A hash
+/// list that can't be read allows nothing.
+fn pinned_ok(pin: &Pin, path: &Path) -> bool {
+    let Ok(hash) = sha256_file(path) else {
+        return false;
+    };
+    if pin.sha256.contains(&hash) {
+        return true;
+    }
+    pin.lists.iter().any(|list| {
+        fs::read_to_string(list).is_ok_and(|text| {
+            text.lines()
+                .filter_map(|l| l.split_whitespace().next())
+                .any(|h| parse_sha256(h) == Some(hash))
+        })
+    })
+}
 
 /// `(s_dev, i_ino)` as the kernel sees it. Userspace `st_dev` uses a
 /// different encoding than the kernel's internal `MKDEV` (major << 20).
@@ -81,6 +109,9 @@ pub struct Resolved {
     pub roots: Vec<Found>,
     pub terminals: Vec<Found>,
     pub missing: Vec<Missing>,
+    /// Files an exe path of a pinned exe matches that have none of its
+    /// hashes: they don't get the app's identity.
+    pub rejected: Vec<Missing>,
     /// Directory → glob patterns of entry names in it that matter. A change
     /// to a matching entry means the policy has to be resolved again.
     pub watches: BTreeMap<PathBuf, BTreeSet<String>>,
@@ -105,6 +136,19 @@ pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String
                     errors.push(format!(
                         "`env \"{var}\"` of {}: a user could replace {}, and the loader \
                          would run what they put there as the app",
+                        app.name,
+                        bad.display()
+                    ));
+                }
+            }
+        }
+        for pin in app.pins.values() {
+            for list in &pin.lists {
+                if let Some(bad) = replaceable(list) {
+                    errors.push(format!(
+                        "hash list {} of {}: a user could replace {}, and with it what \
+                         gets the identity",
+                        list.display(),
                         app.name,
                         bad.display()
                     ));
@@ -227,6 +271,18 @@ fn resolve_one(
         {
             watch(out, dir, glob::Pattern::escape(&name.to_string_lossy()));
         }
+        if kind == Kind::Exe
+            && let Some(pin) = policy.app(app).and_then(|a| a.pins.get(&pat.text))
+            && !pinned_ok(pin, &candidate)
+        {
+            out.rejected.push(Missing {
+                path: candidate,
+                app,
+                kind,
+            });
+            any = true;
+            continue;
+        }
         any = true;
         let key = key_of(&md);
         let list = match kind {
@@ -334,6 +390,34 @@ mod tests {
         assert!(errors[0].contains("LD_LIBRARY_PATH"), "{errors:?}");
         let p = policy(r#"app a { exe "/a" env "LD_PRELOAD=/usr/bin/env" }"#);
         assert!(resolve(&p, &[]).is_ok());
+    }
+
+    #[test]
+    fn pinned_exes() {
+        let t = TempDir::new("pins");
+        let d = &t.0;
+        fs::write(d.join("v1"), "good").unwrap();
+        fs::write(d.join("v2"), "evil").unwrap();
+        let good = sha256_file(&d.join("v1")).unwrap();
+        let hex: String = good.iter().map(|b| format!("{b:02x}")).collect();
+        let p = policy(&format!(
+            r#"app a {{ exe "{d}/v*" sha256 "{hex}" }}"#,
+            d = d.display()
+        ));
+        let r = resolve(&p, &[]).unwrap();
+        assert_eq!(r.exes.len(), 1);
+        assert_eq!(r.exes[0].path, d.join("v1"));
+        assert_eq!(r.rejected.len(), 1);
+        assert_eq!(r.rejected[0].path, d.join("v2"));
+        assert!(r.missing.is_empty());
+        // A list a user could replace.
+        fs::write(d.join("list"), format!("{hex}  v1\n")).unwrap();
+        let p = policy(&format!(
+            r#"app a {{ exe "{d}/v*" hashes "{d}/list" }}"#,
+            d = d.display()
+        ));
+        let errors = resolve(&p, &[]).unwrap_err();
+        assert!(errors[0].contains("could replace"), "{errors:?}");
     }
 
     #[test]

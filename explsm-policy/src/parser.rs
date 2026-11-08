@@ -302,13 +302,24 @@ impl Parser {
             "exe" => {
                 let exes = self.list(|p| {
                     let path = p.string("an exe path")?;
-                    let script = if p.peek_word(&["script"]) {
-                        p.pos += 1;
-                        Some(p.string("a script path")?)
-                    } else {
-                        None
+                    let mut exe = Exe {
+                        path,
+                        script: None,
+                        sha256: Vec::new(),
+                        hashes: Vec::new(),
                     };
-                    Ok(Exe { path, script })
+                    while p.peek_word(&["script", "sha256", "hashes"]) {
+                        let Some(Tok::Word(w)) = p.peek().cloned() else {
+                            unreachable!("peeked a word");
+                        };
+                        p.pos += 1;
+                        match w.as_str() {
+                            "script" => exe.script = Some(p.string("a script path")?),
+                            "sha256" => exe.sha256.push(p.string("a SHA-256 in hex")?),
+                            _ => exe.hashes.push(p.string("the path of a hash list")?),
+                        }
+                    }
+                    Ok(exe)
                 })?;
                 app.exes.extend(exes);
             }

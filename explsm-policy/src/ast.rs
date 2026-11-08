@@ -63,6 +63,10 @@ pub struct App {
 pub struct Exe {
     pub path: Spanned<String>,
     pub script: Option<Spanned<String>>,
+    /// `sha256 "HEX"`, any number: the file must have one of these hashes.
+    pub sha256: Vec<Spanned<String>>,
+    /// `hashes "FILE"`, any number: root-owned lists of allowed hashes.
+    pub hashes: Vec<Spanned<String>>,
 }
 
 #[derive(Debug)]

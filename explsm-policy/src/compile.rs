@@ -259,6 +259,29 @@ pub struct App {
     /// `deny_args`: argument patterns that drop the identity, exact or
     /// ending in `*` (a prefix).
     pub deny_args: Vec<String>,
+    /// Exe pattern ([`PathPat::text`]) → the hashes a file it matches must
+    /// have (`sha256`, `hashes`). Exes without an entry are not pinned.
+    pub pins: HashMap<String, Pin>,
+}
+
+/// What a pinned exe may be: one of `sha256`, or a hash in one of the
+/// `hashes` files (`sha256sum` output, owned by root).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pin {
+    pub sha256: Vec<[u8; 32]>,
+    pub lists: Vec<PathBuf>,
+}
+
+/// A SHA-256 written in hex.
+pub fn parse_sha256(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 impl App {
@@ -931,7 +954,31 @@ fn compile_app<'a>(
         );
     }
     let mut exes = Vec::new();
+    let mut pins: HashMap<String, Pin> = HashMap::new();
     for exe in &a.exes {
+        if !exe.sha256.is_empty() || !exe.hashes.is_empty() {
+            let pin = pins.entry(exe.path.value.clone()).or_default();
+            for h in &exe.sha256 {
+                match parse_sha256(&h.value) {
+                    Some(h) => pin.sha256.push(h),
+                    None => diags.push(
+                        Diagnostic::error(h.span, "not a SHA-256")
+                            .note("64 hex digits, as `sha256sum` prints them"),
+                    ),
+                }
+            }
+            for list in &exe.hashes {
+                let p = Path::new(&list.value);
+                if p.is_absolute() {
+                    pin.lists.push(p.to_path_buf());
+                } else {
+                    diags.push(Diagnostic::error(
+                        list.span,
+                        "a hash list must be an absolute path",
+                    ));
+                }
+            }
+        }
         if let Some(script) = &exe.script {
             diags.push(
                 Diagnostic::error(script.span, "`script` is not supported yet").note(
@@ -1031,6 +1078,7 @@ fn compile_app<'a>(
         code_any,
         started_by: Vec::new(),
         deny_args,
+        pins,
     })
 }
 

@@ -10,3 +10,4 @@ ariadne = "0.6"
 explsm-common.workspace = true
 glob = "0.3"
 libc.workspace = true
+sha2 = "0.10"
