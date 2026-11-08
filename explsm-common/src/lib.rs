@@ -194,9 +194,12 @@ pub const CFG_LAYOUT: u32 = 3;
 pub const CFG_LOG_EXECS: u32 = 4;
 pub const CONFIG_LEN: u32 = 5;
 
-/// Value of `CONFIG[CFG_LAYOUT]` this build writes and expects. Bump it when
-/// a map's key, value or meaning changes.
-pub const LAYOUT_VERSION: u32 = 9;
+// `LAYOUT_VERSION`: the value of `CONFIG[CFG_LAYOUT]` this build writes and
+// expects, a hash of `explsmd/bpf/explsm.h` and the map definitions in
+// `explsm.bpf.c` (see `layout.rs`, `build.rs`). A change to a map's key,
+// value or size changes it; one only to what entries mean needs
+// `LAYOUT_EPOCH` in `explsm.h` bumped.
+include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 
 /// Index into the per-CPU `STATS` array map.
 #[repr(u32)]
@@ -490,6 +493,50 @@ const _: () = {
     assert!(size_of::<TempKey>() == 32);
     assert!(size_of::<EnvKey>() == 132);
 };
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::{string::String, vec::Vec};
+
+    include!("../layout.rs");
+
+    const HEADER: &str = include_str!("../../explsmd/bpf/explsm.h");
+    const BPF: &str = include_str!("../../explsmd/bpf/explsm.bpf.c");
+
+    #[test]
+    fn layout_version_is_of_the_sources() {
+        assert_eq!(super::LAYOUT_VERSION, layout_version(HEADER, BPF));
+        assert_ne!(super::LAYOUT_VERSION, 0);
+    }
+
+    #[test]
+    fn layout_version_ignores_comments_and_code() {
+        let base = layout_version(HEADER, BPF);
+        let reworded = HEADER.replace("/* Types and constants", "/* The types and constants");
+        assert_ne!(reworded, HEADER);
+        assert_eq!(layout_version(&reworded, BPF), base);
+        let reindented = BPF.replace("\t__uint(", "    __uint(");
+        assert_eq!(layout_version(HEADER, &reindented), base);
+        // The programs are not the layout.
+        let code = BPF.replace("bump(STAT_CHECKS);", "bump(STAT_CHECKS); bump(STAT_CHECKS);");
+        assert_ne!(code, BPF);
+        assert_eq!(layout_version(HEADER, &code), base);
+    }
+
+    #[test]
+    fn layout_version_follows_the_maps() {
+        let base = layout_version(HEADER, BPF);
+        let bigger = BPF.replace("__uint(max_entries, 65536);", "__uint(max_entries, 131072);");
+        assert_ne!(bigger, BPF);
+        assert_ne!(layout_version(HEADER, &bigger), base);
+        let epoch = HEADER.replace("#define LAYOUT_EPOCH 1", "#define LAYOUT_EPOCH 2");
+        assert_ne!(epoch, HEADER);
+        assert_ne!(layout_version(&epoch, BPF), base);
+        let maps = |s: &str| s.matches("SEC(\".maps\")").count();
+        assert_eq!(maps(&map_definitions(BPF)), maps(BPF));
+    }
+}
 
 #[cfg(feature = "user")]
 mod user {

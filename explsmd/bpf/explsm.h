@@ -1,5 +1,10 @@
 /* Types and constants shared with userspace. Mirrors explsm-common/src/lib.rs,
  * which documents them; both sides assert the same sizes and offsets.
+ *
+ * This file and the map definitions in explsm.bpf.c make the layout version
+ * of the pinned maps (explsm-common/layout.rs): a daemon of another one
+ * refuses to take them over. Bump LAYOUT_EPOCH when what entries mean
+ * changes and nothing here or in the map definitions does.
  */
 #ifndef EXPLSM_H
 #define EXPLSM_H
@@ -29,6 +34,7 @@ typedef u32 app_id;
 #define PATH_LEN 512
 #define MAX_CHAIN 16
 #define LABEL_XATTR "security.bpf.explsm"
+#define LAYOUT_EPOCH 1
 
 #define PERM_READ (1 << 0)
 #define PERM_WRITE (1 << 1)

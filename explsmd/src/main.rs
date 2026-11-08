@@ -199,8 +199,8 @@ fn check_layout(ebpf: &mut Ebpf, dir: &std::path::Path) -> Result<()> {
         0 => config.set(CFG_LAYOUT, LAYOUT_VERSION, 0)?,
         LAYOUT_VERSION => {}
         other => bail!(
-            "the maps pinned in {} are of another explsm version (layout {other}, this is \
-             {LAYOUT_VERSION}); run `explsmctl unload` or reboot first",
+            "the maps pinned in {} are of another explsm version (layout {other:#010x}, this \
+             is {LAYOUT_VERSION:#010x}); run `explsmctl unload` or reboot first",
             dir.display()
         ),
     }
