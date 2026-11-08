@@ -42,7 +42,8 @@
  *   ones. An exec by a task of an AF_INHERIT app that keeps its identity is
  *   not checked: the app itself chose the environment and the namespace.
  * - ptrace and everything that goes through ptrace_may_access (/proc/<pid>/
- *   mem, environ, fd/, process_vm_*, pidfd_getfd) on an app's task is only
+ *   mem, environ, fd/, ns/, process_vm_*, pidfd_getfd, setns on a pidfd and
+ *   the pidfd namespace ioctls) on an app's task is only
  *   for the same app, the daemon, and root with the bypass on. So are the
  *   signals that dump core and changes to its resource limits (which can
  *   make it dump core): the dump would hold its memory.
@@ -1263,8 +1264,10 @@ static __always_inline app_id app_of(struct task_struct *task)
 	return info ? info->app_id : APP_UNCONFINED;
 }
 
-/* ptrace attach, /proc/<pid>/mem, environ, fd/, maps,
- * process_vm_readv/writev, pidfd_getfd. */
+/* ptrace attach, /proc/<pid>/mem, environ, fd/, maps, ns/,
+ * process_vm_readv/writev, pidfd_getfd, and setns(2) on a pidfd
+ * (validate_nsset checks PTRACE_MODE_READ_REALCREDS before it looks at the
+ * namespaces; there is no setns hook). */
 SEC("lsm/ptrace_access_check")
 int LSM_PROG(ptrace_access_check, struct task_struct *child, u32 mode, int retval)
 {

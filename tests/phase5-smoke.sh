@@ -175,6 +175,17 @@ wait_out "owner=owner ptrace\\(read\\) need=tamper target=$tpid"
 check "the denial is logged" $? "$(olog | tail -3)"
 nobody "$OB/bash" -c "x=\$(< /proc/$tpid/environ)" 2> /dev/null
 check "the same app can" $? ""
+# setns(2) on a pidfd checks ptrace_may_access(PTRACE_MODE_READ_REALCREDS)
+# on the target before anything else (validate_nsset), like opening
+# /proc/<pid>/ns/*. Unprivileged it fails without explsm too (no
+# CAP_SYS_ADMIN over the namespaces), so the event shows who refused it.
+emark
+nobody python3 -c "import os, sys; os.setns(os.pidfd_open($tpid), os.CLONE_NEWUTS)" 2> /dev/null
+rc=$?
+wait_out "subject=unconfined owner=owner ptrace\(read\) need=tamper target=$tpid"
+found=$?
+check "setns on an app's pidfd is refused as a ptrace read" "$([[ $found -eq 0 && $rc -ne 0 ]]; echo $?)" \
+    "rc=$rc $(olog | tail -3)"
 nobody bash -c "$OB/bash -c 'read -t 3 _' < <(sleep 3) & sleep 0.3; exec 3< /proc/\$!/mem" 2> /dev/null
 rc=$?
 check "an unconfined parent can't open its app child's /proc/<pid>/mem" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"

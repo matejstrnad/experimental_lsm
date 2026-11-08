@@ -92,9 +92,14 @@ whatever the policy explicitly grants.
   namespace (Chromium's and Electron's zygote), as it does under `inherit`.
   Such a namespace belongs to the user, so another process of the user has
   every capability in it: entering it and its mount namespace would let it
-  mount over what the app loads next. Opening `/proc/<pid>/ns/*` is a ptrace
-  check and refused in enforce mode; whether `setns` on a pidfd is stopped
-  the same way has not been checked.
+  mount over what the app loads next. Opening `/proc/<pid>/ns/*`,
+  `setns(2)` on a pidfd and the pidfd ioctls that open a namespace
+  (`PIDFD_GET_*_NAMESPACE`) all check `ptrace_may_access` on the app's
+  process first, so explsm's ptrace hook refuses them in enforce mode (and
+  logs `ptrace(read) need=tamper`). Linux has no LSM hook for `setns`
+  itself. A process in the namespace that is not the app (one that
+  executed some other exe, without `inherit`) is not guarded, and entering
+  the namespace through it is not stopped.
 - **Core dumps.** Signals that dump core and resource limit changes are
   refused to other subjects, but an app that crashes by itself (on data it
   was fed, say) still leaves a dump its user can read, with apport or
