@@ -16,6 +16,9 @@ set -u
 BIN=$(realpath "${1:-target/release}")
 DIR=/var/tmp/explsm-phase6
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$BIN/explsmd"
+step "setting up $DIR"
 [[ -x $BIN/explsmd ]] || { echo "explsmd not in $BIN; build first" >&2; exit 2; }
 command -v unshare > /dev/null || { echo "unshare is needed" >&2; exit 2; }
 command -v prlimit > /dev/null || { echo "prlimit is needed" >&2; exit 2; }

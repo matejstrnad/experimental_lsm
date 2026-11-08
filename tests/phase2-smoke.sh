@@ -12,7 +12,9 @@ set -u
 EXPLSMD=$(realpath "${1:-target/release/explsmd}")
 DIR=/var/tmp/explsm-phase2
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
-[[ -x $EXPLSMD ]] || { echo "$EXPLSMD not found; build it first" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$EXPLSMD"
+step "setting up $DIR"
 command -v python3 > /dev/null || { echo "python3 is needed" >&2; exit 2; }
 
 rm -rf "$DIR"
@@ -42,7 +44,13 @@ echo deeper > "$OUTDEEP/file"
 # Beyond MAX_WALK: longer than PATH_MAX, so made (and read) a step at a time.
 ABYSS=$O/abyss
 mkdir "$ABYSS"
-(cd "$ABYSS" && for _ in $(seq 4100); do mkdir d && cd d || exit 1; done && echo abyss > file)
+# mkdir one level at a time from inside (PATH_MAX); in python, as 4100
+# mkdir processes take a minute.
+python3 -c 'import os,sys
+os.chdir(sys.argv[1])
+for _ in range(4100):
+    os.mkdir("d"); os.chdir("d")
+open("file", "w").write("abyss\n")' "$ABYSS"
 # Private copies, so their inodes identify the apps without also matching
 # every system binary. Named like the originals for multi-call coreutils.
 for b in cat mv ln bash; do cp "$(type -P $b)" "$OB/$b"; done
@@ -85,6 +93,7 @@ nobody() { setpriv --reuid=65534 --regid=65534 --clear-groups -- "$@"; }
 
 daemon=
 start() { # extra explsmd args
+    step "starting explsmd $*"
     : > "$OUT"; : > "$ERR"
     "$EXPLSMD" --policy "$POLICY" --no-dbus --no-pin --no-self-protect "$@" > "$OUT" 2> "$ERR" &
     daemon=$!

@@ -17,6 +17,9 @@ set -u
 BIN=$(realpath "${1:-target/release}")
 DIR=/var/tmp/explsm-landlock
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$BIN/explsmd"
+step "setting up $DIR"
 [[ -x $BIN/explsmd ]] || { echo "explsmd not in $BIN; build first" >&2; exit 2; }
 # Another explsmd's hooks would see this one as an unconfined process.
 if pgrep -x explsmd > /dev/null || [[ -e /sys/fs/bpf/explsm ]]; then

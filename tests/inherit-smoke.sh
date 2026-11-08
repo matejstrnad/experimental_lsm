@@ -20,6 +20,9 @@ BIN=$(realpath "${1:-target/release}")
 DIR=/var/tmp/explsm-inherit
 PIN=/sys/fs/bpf/explsm-smoke-inherit
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$BIN/explsmd" "$BIN/explsmctl"
+step "setting up $DIR"
 for b in explsmd explsmctl; do
     [[ -x $BIN/$b ]] || { echo "$b not in $BIN; build first" >&2; exit 2; }
 done

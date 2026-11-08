@@ -18,6 +18,9 @@ EXPLSMD=$BIN/explsmd
 CTL=$BIN/explsmctl
 DIR=/var/tmp/explsm-phase3
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$BIN/explsmd" "$BIN/explsmctl"
+step "setting up $DIR"
 [[ -x $EXPLSMD && -x $CTL ]] || { echo "explsmd/explsmctl not in $BIN; build first" >&2; exit 2; }
 command -v python3 > /dev/null || { echo "python3 is needed" >&2; exit 2; }
 

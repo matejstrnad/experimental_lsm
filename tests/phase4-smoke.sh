@@ -24,6 +24,9 @@ EXPLSMD=$BIN/explsmd
 CTL=$BIN/explsmctl
 DIR=/var/tmp/explsm-phase4
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 2; }
+. "$(dirname "$0")/common.sh"
+fresh "$BIN/explsmd" "$BIN/explsmctl" "$BIN/explsm-agent"
+step "setting up $DIR"
 for b in explsmd explsmctl explsm-agent; do
     [[ -x $BIN/$b ]] || { echo "$b not in $BIN; build first" >&2; exit 2; }
 done
