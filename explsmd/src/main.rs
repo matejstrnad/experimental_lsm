@@ -20,7 +20,9 @@
 //!
 //! Once set up, the daemon puts itself in a Landlock sandbox (`sandbox.rs`)
 //! and reads other processes' `/proc` entries through a helper outside it
-//! (`procs.rs`).
+//! (`procs.rs`), then tells systemd it is ready (`notify.rs`). Without the
+//! sandbox or the D-Bus API it warns and runs, unless the policy has
+//! `require_sandbox` or `require_dbus`: then the start fails like any other.
 
 mod claims;
 mod dbus;
@@ -30,6 +32,7 @@ mod grants;
 mod hooks;
 mod journal;
 mod labels;
+mod notify;
 mod pin;
 mod procs;
 mod prompts;
@@ -241,6 +244,41 @@ fn unload_standalone(cli: &Cli) -> Result<()> {
     }
 }
 
+/// What the policy requires of the start, read before anything is loaded so
+/// a start it refuses changes nothing. A policy that does not compile fails
+/// the start later anyway.
+#[derive(Default)]
+struct Requires {
+    sandbox: bool,
+    dbus: bool,
+}
+
+impl Requires {
+    fn read(cli: &Cli) -> Self {
+        let Ok(sources) = explsm_policy::Sources::load_with_claims(&cli.policy, Some(&cli.claims))
+        else {
+            return Self::default();
+        };
+        match explsm_policy::check(&sources, &Default::default()) {
+            Ok(policy) => Self {
+                sandbox: policy.require_sandbox,
+                dbus: policy.require_dbus,
+            },
+            Err(_) => Self::default(),
+        }
+    }
+}
+
+/// Remove what this start pinned. Pins taken over from an earlier daemon
+/// stay: they enforce the policy it loaded.
+fn abandon(pins: &pin::Pins, reused: bool) {
+    if (!reused || !pins.keep)
+        && let Err(u) = pin::unload(&pins.dir)
+    {
+        eprintln!("explsmd: warning: removing {}: {u}", pins.dir.display());
+    }
+}
+
 /// Load the object into the pins, fill the maps from the policy, then load
 /// and attach the programs.
 fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
@@ -370,6 +408,28 @@ async fn main() -> Result<()> {
         Some(p) => p.clone(),
         None => std::env::current_exe().context("finding the explsmd executable")?,
     };
+    let requires = Requires::read(&cli);
+    if requires.sandbox && (cli.no_landlock || !sandbox::available()) {
+        bail!(
+            "the policy has `require_sandbox on`, and {}",
+            if cli.no_landlock {
+                "--no-landlock was given"
+            } else {
+                "this kernel has no Landlock (is `landlock` in its lsm= list?)"
+            }
+        );
+    }
+    if requires.dbus {
+        if cli.no_dbus {
+            bail!("the policy has `require_dbus on`, and --no-dbus was given");
+        }
+        drop(
+            zbus::Connection::system()
+                .await
+                .context("the policy has `require_dbus on`, and the system bus is not available")?,
+        );
+    }
+    let notifier = notify::Notifier::from_env();
 
     // Without pinning, the maps still go to bpffs (their definitions ask
     // for it), in a directory of this run that is removed on exit.
@@ -383,13 +443,7 @@ async fn main() -> Result<()> {
     let mut state = match start(&cli, &mut pins, daemon) {
         Ok(started) => started,
         Err(e) => {
-            // Remove what this start pinned. Pins taken over from an earlier
-            // daemon stay: they enforce the policy it loaded.
-            if (!reused || !pins.keep)
-                && let Err(u) = pin::unload(&pins.dir)
-            {
-                eprintln!("explsmd: warning: removing {}: {u}", pins.dir.display());
-            }
+            abandon(&pins, reused);
             return Err(e);
         }
     };
@@ -419,8 +473,12 @@ async fn main() -> Result<()> {
     } else {
         match dbus::serve(tx).await {
             Ok(conn) => Some(conn),
+            Err(e) if requires.dbus => {
+                abandon(&pins, reused);
+                bail!("D-Bus API not available (`require_dbus on`): {e}");
+            }
             Err(e) => {
-                eprintln!("explsmd: warning: D-Bus API not available: {e}");
+                eprintln!("explsmd: warning: D-Bus API not available: {e}; no prompts or explsmctl");
                 None
             }
         }
@@ -447,7 +505,9 @@ async fn main() -> Result<()> {
             " (Ctrl-C to stop)".into()
         }
     );
-    // Connected to the bus and the journal, and nothing else to set up.
+    // Connected to the bus, the journal and systemd, and nothing else to
+    // set up.
+    let mut sandboxed = cli.no_landlock.then_some("not sandboxed (--no-landlock)");
     if !cli.no_landlock {
         let paths = sandbox::Paths {
             policy: &cli.policy,
@@ -455,11 +515,30 @@ async fn main() -> Result<()> {
             state_dir: &cli.state_dir,
             pin_dir: &pins.dir,
         };
-        match sandbox::restrict(&paths) {
-            Ok(status) => eprintln!("explsmd: {status}"),
-            Err(e) => eprintln!("explsmd: warning: not sandboxed: {e:#}"),
+        let refused = match sandbox::restrict(&paths) {
+            Ok(status) if status.enforced || !requires.sandbox => {
+                eprintln!("explsmd: {}", status.text);
+                sandboxed = Some(status.text);
+                None
+            }
+            Ok(status) => Some(anyhow::anyhow!("{}", status.text)),
+            Err(e) if requires.sandbox => Some(e),
+            Err(e) => {
+                eprintln!("explsmd: warning: not sandboxed: {e:#}");
+                sandboxed = Some("not sandboxed");
+                None
+            }
+        };
+        if let Some(e) = refused {
+            abandon(&pins, reused);
+            return Err(e.context("`require_sandbox on`"));
         }
     }
+    notifier.send(&format!(
+        "READY=1\nSTATUS=attached, {}{}",
+        sandboxed.unwrap_or("not sandboxed"),
+        if bus.is_none() { ", no D-Bus API" } else { "" }
+    ));
 
     let mut rescan_at: Option<Instant> = None;
     let mut unloaded = false;
@@ -599,6 +678,7 @@ async fn main() -> Result<()> {
         .zip(s)
         .map(|(n, v)| format!("{n}={v}"))
         .collect();
+    notifier.send("STOPPING=1");
     eprintln!("explsmd: stopping. {}", counters.join(" "));
     if !pins.keep && !unloaded {
         // Dropping the links detaches the programs; the maps go with the pins.

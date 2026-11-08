@@ -15,9 +15,11 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# Ready once the bus name is owned, which explsmd does after attaching.
-Type=dbus
-BusName=org.explsm.Daemon1
+# Ready once explsm is attached and the daemon set up (sd_notify), bus
+# name or not: without D-Bus it runs with a warning (no prompts), or, with
+# `require_dbus on` in the policy, fails at once and is restarted. Under
+# Type=dbus it waited out TimeoutStartSec instead, holding up logins.
+Type=notify
 ExecStart=/usr/sbin/explsmd
 ExecReload=/bin/kill -HUP $MAINPID
 # Not on success: `explsmctl unload` stops the daemon for good.

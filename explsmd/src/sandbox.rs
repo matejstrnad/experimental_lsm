@@ -43,9 +43,33 @@ pub struct Paths<'a> {
     pub pin_dir: &'a Path,
 }
 
+/// How much of the sandbox the kernel enforces.
+pub struct Status {
+    /// Some of it at least.
+    pub enforced: bool,
+    pub text: &'static str,
+}
+
+/// Whether the kernel has Landlock at all (and it is not turned off), asked
+/// before anything is set up, so `require_sandbox` can refuse early.
+pub fn available() -> bool {
+    const LANDLOCK_CREATE_RULESET_VERSION: libc::c_uint = 1;
+    // SAFETY: with this flag and no attributes the call only returns the ABI
+    // version.
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            LANDLOCK_CREATE_RULESET_VERSION,
+        )
+    };
+    abi >= 1
+}
+
 /// Restrict the daemon, all of its threads. Returns how much of it the
 /// kernel enforces.
-pub fn restrict(paths: &Paths) -> Result<String> {
+pub fn restrict(paths: &Paths) -> Result<Status> {
     let read = AccessFs::ReadFile | AccessFs::ReadDir;
     let write =
         read | AccessFs::WriteFile | AccessFs::MakeReg | AccessFs::RemoveFile | AccessFs::Truncate;
@@ -100,13 +124,15 @@ pub fn restrict(paths: &Paths) -> Result<String> {
             threads.map_or("?".into(), |n| n.to_string())
         );
     }
-    Ok(match status.ruleset {
-        RulesetStatus::FullyEnforced => "sandboxed (Landlock)".into(),
-        RulesetStatus::PartiallyEnforced => {
-            "partly sandboxed (Landlock: this kernel has only some of its rights)".into()
-        }
-        RulesetStatus::NotEnforced => "not sandboxed (this kernel has no Landlock)".into(),
-    })
+    let (enforced, text) = match status.ruleset {
+        RulesetStatus::FullyEnforced => (true, "sandboxed (Landlock)"),
+        RulesetStatus::PartiallyEnforced => (
+            true,
+            "partly sandboxed (Landlock: this kernel has only some of its rights)",
+        ),
+        RulesetStatus::NotEnforced => (false, "not sandboxed (this kernel has no Landlock)"),
+    };
+    Ok(Status { enforced, text })
 }
 
 fn threads() -> Option<usize> {
@@ -181,8 +207,9 @@ mod tests {
             pin_dir: &dir.join("pins"),
         })
         .unwrap();
-        if status.starts_with("not") {
-            eprintln!("skipped: {status}");
+        assert_eq!(status.enforced, available());
+        if !status.enforced {
+            eprintln!("skipped: {}", status.text);
             return;
         }
         let denied =

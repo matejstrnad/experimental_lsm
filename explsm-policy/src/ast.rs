@@ -16,6 +16,10 @@ pub enum Item {
     RootBypass(Spanned<bool>),
     /// `fail_closed on|off`
     FailClosed(Spanned<bool>),
+    /// `require_sandbox on|off`
+    RequireSandbox(Spanned<bool>),
+    /// `require_dbus on|off`
+    RequireDbus(Spanned<bool>),
     /// `users 1000, alice`
     Users(Spanned<Vec<Spanned<String>>>),
     App(App),

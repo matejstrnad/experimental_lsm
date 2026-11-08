@@ -2,7 +2,8 @@
 # The daemon's Landlock sandbox: explsmd restricts itself once attached, its
 # /proc helper keeps only the capabilities it needs, processes of exes added
 # by a reload are still seeded (through the helper), and the pins are still
-# removed on exit.
+# removed on exit. Also readiness (sd_notify) and `require_sandbox` and
+# `require_dbus`.
 #
 # Runs explsmd against a throwaway sandbox in /var/tmp, not pinned. Must run
 # as root; app processes run as `nobody`. Stop an installed explsmd first
@@ -67,12 +68,32 @@ cleanup() {
 trap cleanup EXIT
 : > "$OUT"; : > "$ERR"; om=0
 
+# A stand-in for systemd's notify socket (Type=notify), which notes what
+# explsmd sends.
+python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.bind(sys.argv[1])
+with open(sys.argv[2], "w", buffering=1) as log:
+    while True:
+        log.write(s.recv(4096).decode() + "\n")
+' "$DIR/notify.sock" "$DIR/notify.log" &
+targets+=($!)
+for _ in $(seq 50); do [[ -S $DIR/notify.sock ]] && break; sleep 0.1; done
+
+NOTIFY_SOCKET=$DIR/notify.sock \
 "$EXPLSMD" --policy "$DIR/policy.explsm" --claims "$DIR/claims.d" --agent "$DIR/no-agent" \
     --state-dir "$DIR/state" --no-dbus --no-pin --no-self-protect \
     >> "$OUT" 2> "$ERR" &
 daemon=$!
 wait_err attached || { echo "explsmd did not start:"; cat "$ERR"; exit 1; }
+for _ in $(seq 50); do grep -q READY=1 "$DIR/notify.log" 2> /dev/null && break; sleep 0.1; done
 pins=/sys/fs/bpf/explsm-run$daemon
+
+# --- readiness ---------------------------------------------------------------
+check "explsmd tells systemd it is ready once sandboxed" \
+    "$(grep -q "READY=1" "$DIR/notify.log" && grep -q "STATUS=attached, sandboxed" "$DIR/notify.log"; echo $?)" \
+    "$(cat "$DIR/notify.log")"
 
 # --- the sandbox and the helper ----------------------------------------------
 wait_err "sandboxed \(Landlock\)"
@@ -131,6 +152,23 @@ check "the helper exits with the daemon" "$([[ -z $helper ]] || ! kill -0 "$help
     "pid $helper"
 ! grep -q "warning" "$ERR"
 check "no warnings" $? "$(grep warning "$ERR")"
+check "… and it says it is stopping" "$(grep -q STOPPING=1 "$DIR/notify.log"; echo $?)" \
+    "$(cat "$DIR/notify.log")"
+
+# --- require_sandbox and require_dbus ------------------------------------------
+# Refused before anything is loaded: no pins, a failed exit, at once.
+for req in "require_sandbox on|--no-landlock" "require_dbus on|--no-dbus"; do
+    setting=${req%|*} flag=${req#*|}
+    cp "$DIR/policy.explsm" "$DIR/require.explsm"
+    echo "$setting" >> "$DIR/require.explsm"
+    timeout 10 "$EXPLSMD" --policy "$DIR/require.explsm" --claims "$DIR/claims.d" \
+        --agent "$DIR/no-agent" --state-dir "$DIR/state" --no-pin --no-self-protect $flag \
+        > /dev/null 2> "$DIR/require.log"
+    rc=$?
+    [[ $rc -ne 0 && $rc -ne 124 ]] && grep -q "\`$setting\`" "$DIR/require.log" \
+        && ! ls -d /sys/fs/bpf/explsm-run* > /dev/null 2>&1
+    check "$setting with $flag refuses to start" $? "rc=$rc $(cat "$DIR/require.log")"
+done
 
 echo
 [[ $fails -eq 0 ]] && echo "all passed" || echo "$fails failed"

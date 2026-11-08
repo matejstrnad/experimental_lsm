@@ -8,10 +8,19 @@ use crate::{
     lexer::{Tok, lex},
 };
 
-const TOP_LEVEL: [&str; 7] =
-    ["app", "grant", "claim", "terminal", "root_bypass", "fail_closed", "users"];
-const EXPECTED_TOP: &str =
-    "`app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed` or `users`";
+const TOP_LEVEL: [&str; 9] = [
+    "app",
+    "grant",
+    "claim",
+    "terminal",
+    "root_bypass",
+    "fail_closed",
+    "require_sandbox",
+    "require_dbus",
+    "users",
+];
+const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed`, \
+                            `require_sandbox`, `require_dbus` or `users`";
 const APP_BODY: [&str; 5] = ["exe", "owns", "mode", "inherit", "env"];
 const EXPECTED_APP: &str = "`exe`, `owns`, `mode`, `inherit`, `env` or `}`";
 
@@ -196,6 +205,8 @@ impl Parser {
             }
             "root_bypass" => self.on_off().map(Item::RootBypass),
             "fail_closed" => self.on_off().map(Item::FailClosed),
+            "require_sandbox" => self.on_off().map(Item::RequireSandbox),
+            "require_dbus" => self.on_off().map(Item::RequireDbus),
             "users" => {
                 let users = self.list(|p| p.word("a user name or uid"))?;
                 let span = join(kw.span, self.prev_span());
@@ -401,7 +412,8 @@ mod tests {
         assert_eq!(
             e,
             [
-                "expected `app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed` or `users`, found `bogus`",
+                "expected `app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed`, \
+                 `require_sandbox`, `require_dbus` or `users`, found `bogus`",
                 "expected `exe`, `owns`, `mode`, `inherit`, `env` or `}`, found `frobnicate`",
                 "grant without permissions",
                 "expected `on` or `off`, found `maybe`",

@@ -270,6 +270,11 @@ pub struct Compiled {
     /// `fail_closed on`: logins wait for explsmd at boot (see
     /// `packaging/explsm-gate.service`).
     pub fail_closed: bool,
+    /// `require_sandbox on`: explsmd refuses to start without its Landlock
+    /// sandbox.
+    pub require_sandbox: bool,
+    /// `require_dbus on`: explsmd refuses to start without its D-Bus API.
+    pub require_dbus: bool,
     /// `users …`: names or uids. `None`: every regular user.
     pub users: Option<Vec<Spanned<String>>>,
     pub apps: Vec<App>,
@@ -367,6 +372,8 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let mut ids = ids.clone();
     let mut root_bypass: Option<&Spanned<bool>> = None;
     let mut fail_closed: Option<&Spanned<bool>> = None;
+    let mut require_sandbox: Option<&Spanned<bool>> = None;
+    let mut require_dbus: Option<&Spanned<bool>> = None;
     let mut users: Option<&Spanned<Vec<Spanned<String>>>> = None;
     let mut apps: Vec<App> = Vec::new();
     let mut app_spans: HashMap<&str, Span> = HashMap::new();
@@ -393,6 +400,24 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     );
                 }
                 fail_closed = Some(v);
+            }
+            Item::RequireSandbox(v) => {
+                if let Some(first) = require_sandbox {
+                    diags.push(
+                        Diagnostic::error(v.span, "`require_sandbox` is set twice")
+                            .also(first.span, "first set here"),
+                    );
+                }
+                require_sandbox = Some(v);
+            }
+            Item::RequireDbus(v) => {
+                if let Some(first) = require_dbus {
+                    diags.push(
+                        Diagnostic::error(v.span, "`require_dbus` is set twice")
+                            .also(first.span, "first set here"),
+                    );
+                }
+                require_dbus = Some(v);
             }
             Item::Users(u) => {
                 if let Some(first) = users {
@@ -519,6 +544,8 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     Ok(Compiled {
         root_bypass: root_bypass.is_none_or(|v| v.value),
         fail_closed: fail_closed.is_some_and(|v| v.value),
+        require_sandbox: require_sandbox.is_some_and(|v| v.value),
+        require_dbus: require_dbus.is_some_and(|v| v.value),
         users: users.map(|u| u.value.clone()),
         apps,
         grants,
@@ -677,6 +704,8 @@ mod tests {
         );
         assert!(!c.root_bypass);
         assert!(!c.fail_closed);
+        assert!(!c.require_sandbox);
+        assert!(!c.require_dbus);
         assert_eq!(c.apps[0].mode, Mode::Enforce);
         assert_eq!(c.apps[1].mode, Mode::Audit);
         assert_eq!(c.name(2), "backup");
@@ -883,6 +912,10 @@ mod tests {
     fn fail_closed() {
         assert!(compiled("fail_closed on").fail_closed);
         assert!(!compiled("fail_closed off").fail_closed);
+        assert!(compiled("require_sandbox on").require_sandbox);
+        assert!(!compiled("require_sandbox off").require_sandbox);
+        assert!(compiled("require_dbus on").require_dbus);
+        assert_eq!(errors("require_dbus on\nrequire_dbus on"), ["`require_dbus` is set twice"]);
     }
 
     #[test]

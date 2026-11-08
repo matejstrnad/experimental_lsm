@@ -92,7 +92,9 @@ It installs:
 
 If explsmd fails to start, users log in unprotected by default, and each
 user's agent says explsm is not running; with `fail_closed on` in the policy
-(see [docs/dsl.md](docs/dsl.md)) only root may log in until it runs.
+(see [docs/dsl.md](docs/dsl.md)) only root may log in until it runs. Without
+its Landlock sandbox or the system bus it warns and runs; `require_sandbox
+on` and `require_dbus on` make either a failed start.
 
 explsmd starts before anyone can log in (`Before=systemd-user-sessions.service`),
 with a nice level of -10, the highest best-effort I/O priority and an OOM

@@ -185,6 +185,25 @@ start systemd-user-sessions`; or boot with `explsm=off`, which skips the
 gate. It takes effect at the next boot, and stays as the last policy in
 force left it. Turn it off before disabling explsmd.
 
+### `require_sandbox on|off`
+
+`off` (the default): if explsmd can't put itself in its Landlock sandbox
+(a kernel without Landlock, or `landlock` missing from its `lsm=` list), it
+says so and runs anyway. `on`: it refuses to start instead, before loading
+anything when the kernel has no Landlock at all; a kernel with only some of
+Landlock's rights is enough. Read at start only. With `fail_closed off`, a
+refused start leaves users unprotected rather than protected by an
+unsandboxed daemon, so turn both on, or neither.
+
+### `require_dbus on|off`
+
+`off` (the default): without the system bus explsmd still enforces the
+policy, but no prompts reach the agents and `explsmctl status`, `load` and
+`unload` don't work (SIGHUP still reloads). `on`: it refuses to start
+instead. Read at start only. Either way systemd learns at once whether the
+start worked (`Type=notify`), so a failed start is restarted (up to 5 times
+a minute) instead of holding up logins until a timeout.
+
 ### `users NAME_OR_UID, …`
 
 The users `~/` paths are expanded for. Without it: every user in
