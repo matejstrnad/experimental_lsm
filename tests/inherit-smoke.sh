@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test for `inherit` and `env`: an inheriting app keeps its identity
 # across execs of exes that are no app, and chooses its own environment;
-# allowed loader variables don't drop the identity, others still do; an
-# `env` path a user could replace is refused.
+# any app keeps it across its own exes, whatever the environment or user
+# namespace (Chromium's zygote); allowed loader variables don't drop the
+# identity, others still do; an `env` path a user could replace is refused.
 #
 # Runs explsmd from a copy in a throwaway sandbox in /var/tmp, pinned in
 # /sys/fs/bpf/explsm-smoke-inherit (not the real pin directory). Must run
@@ -47,6 +48,8 @@ echo s3cret > "$I/secret"
 echo s3cret > "$P/secret"
 cp "$(type -P bash)" "$IB/bash"
 cp "$(type -P bash)" "$PB/bash"
+cp "$(type -P cat)" "$PB/cat"
+cp "$(type -P unshare)" "$PB/unshare"
 cp "$(type -P cat)" "$XB/cat"
 cp "$BIN/explsmd" "$SB/explsmd"
 cp "$BIN/explsmctl" "$SB/explsmctl"
@@ -69,7 +72,7 @@ app inh {
     mode enforce
 }
 app plain {
-    exe "$PB/bash"
+    exe "$PB/bash", "$PB/cat", "$PB/unshare"
     owns "$P"
     mode enforce
 }
@@ -83,6 +86,7 @@ OUT=$DIR/events.log
 ERR=$DIR/explsmd.log
 
 fails=0
+skip() { echo "SKIP  $1: $2"; }
 check() { # name, condition result (0 = pass), detail
     if [[ $2 -eq 0 ]]; then echo "PASS  $1"; else echo "FAIL  $1: $3"; fails=$((fails + 1)); fi
 }
@@ -135,6 +139,20 @@ nobody "$IB/bash" -c "LD_PRELOAD=/nonexistent.so $IB/bash -c 'cat $I/secret'" > 
 check "… and for its own exe" $? ""
 nobody cat "$I/secret" > /dev/null 2>&1
 check "an unconfined process is denied" "$(denied $?)" ""
+
+# --- the app's own exes -------------------------------------------------------
+nobody "$PB/bash" -c "LD_PRELOAD=/nonexistent.so $PB/cat $P/secret" > /dev/null 2>&1
+check "without inherit, the app may set loader variables for its own exe" $? ""
+nobody "$IB/bash" -c "LD_PRELOAD=/nonexistent.so $PB/cat $P/secret" > /dev/null 2>&1
+check "… but not for another app's" "$(denied $?)" ""
+if ! nobody "$PB/unshare" -U true 2> /dev/null; then
+    skip "user namespaces" "nobody can't create one here"
+else
+    nobody "$PB/unshare" -U "$PB/cat" "$P/secret" > /dev/null 2>&1
+    check "the app keeps it across its own exe in a namespace it made" $? ""
+    nobody unshare -U "$PB/cat" "$P/secret" > /dev/null 2>&1
+    check "… not in one that another program made" "$(denied $?)" ""
+fi
 
 # --- env ----------------------------------------------------------------------
 nobody env LD_PRELOAD="$LIBC" "$IB/bash" -c "cat $I/secret" > /dev/null 2>&1

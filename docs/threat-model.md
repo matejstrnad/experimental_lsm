@@ -87,6 +87,14 @@ whatever the policy explicitly grants.
   apps. Mount namespaces that root sets up in the initial user namespace
   (snaps) are trusted; so is whatever a setuid sandbox tool (firejail) lets
   its user mount there.
+- **An app's own user namespace is trusted.** A process that is already the
+  app keeps the identity when it executes the app's exe again in a user
+  namespace (Chromium's and Electron's zygote), as it does under `inherit`.
+  Such a namespace belongs to the user, so another process of the user has
+  every capability in it: entering it and its mount namespace would let it
+  mount over what the app loads next. Opening `/proc/<pid>/ns/*` is a ptrace
+  check and refused in enforce mode; whether `setns` on a pidfd is stopped
+  the same way has not been checked.
 - **Core dumps.** Signals that dump core and resource limit changes are
   refused to other subjects, but an app that crashes by itself (on data it
   was fed, say) still leaves a dump its user can read, with apport or

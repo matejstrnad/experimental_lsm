@@ -228,7 +228,9 @@ path is refused the pinned state, so `explsmctl unload` first (or reboot).
   initial one (`unshare -U`, Flatpak's bwrap, rootless containers) runs
   unconfined too: there its user can mount its own libraries or
   `/etc/ld.so.preload` over the real ones. It is logged as `dropped=userns`.
-  Snaps run in the initial one and are not affected.
+  Snaps run in the initial one and are not affected. A process that is
+  already the app keeps it when it runs the app's exe again in a namespace
+  it made itself, as Chromium's and Electron's sandboxes do.
 
 - Mediated: open (read/write, and `list` for directories), create, mkdir,
   mknod, symlink, link, unlink, rmdir, rename, setattr (chmod, chown,

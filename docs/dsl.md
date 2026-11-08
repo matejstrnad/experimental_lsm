@@ -77,10 +77,9 @@ app launcher {
 }
 ```
 
-When a process keeps the identity this way, or executes one of the app's
-own exes again, its loader variables and user namespace are not checked
-(see [Loader variables](#loader-variables)): the app chose them itself.
-Everything the app runs is the app, though, including a browser it starts
+When a process keeps the identity this way, its loader variables and user
+namespace are not checked (see [Loader variables](#loader-variables)): the
+app chose them itself. Everything the app runs is the app, though, including a browser it starts
 to open a link, so `inherit` is for apps whose helpers are trusted as much
 as the app.
 
@@ -113,8 +112,14 @@ env "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"
 An exec that gives a process an app's identity (from no app, or from another
 app) is refused the identity if a loader variable is set that the app's
 `env` does not allow, or if the process is in a user namespace other than
-the initial one. An exec that keeps the identity of an `inherit` app is not
-checked.
+the initial one.
+
+An exec that keeps the identity is not checked: a process of an app that
+executes one of the app's own exes again, with or without `inherit`, or a
+process of an `inherit` app that executes an exe of no app. The app chose
+the environment and the namespace itself. Chromium-based browsers and
+Electron apps need this: they start their sandboxed zygote by executing
+their own exe again in a user namespace they just created.
 
 ### `grant SUBJECT PERMS to OWNER`
 

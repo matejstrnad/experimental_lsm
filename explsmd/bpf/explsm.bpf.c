@@ -845,12 +845,15 @@ int bprm_committed_creds(u64 *ctx)
 		app = APP_DAEMON;
 	struct task_struct *task = bpf_get_current_task_btf();
 
-	/* A task of an inheriting app keeps it across an exe that is no app's
-	 * (helpers, shells, a bundled runtime) and across its own: the app
-	 * chose the exe, its environment and its namespace. */
+	/* A task of an app keeps it across its own exes (Chromium's zygote,
+	 * run again in a user namespace the app made), and a task of an
+	 * inheriting app across an exe that is no app's too (helpers, shells,
+	 * a bundled runtime): the app chose the exe, its environment and its
+	 * namespace. */
 	struct task_info *cur = bpf_task_storage_get(&TASKS, task, NULL, 0);
 	app_id prev = cur ? cur->app_id : APP_UNCONFINED;
-	if (cur && (app == APP_UNCONFINED || app == prev) && inherits(prev))
+	if (cur && prev != APP_UNCONFINED &&
+	    (app == prev || (app == APP_UNCONFINED && inherits(prev))))
 		return exec_as(bprm, key, prev);
 
 	/* The loader would run foreign code inside the app: no identity. */
