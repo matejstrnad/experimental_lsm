@@ -165,6 +165,16 @@ const ACCESS: &[Sig] = &[
         "task_setrlimit",
         &[TASK, Scalar, Ptr("struct rlimit")],
     ),
+    sig(
+        "mmap_file",
+        "mmap_file",
+        &[Ptr("struct file"), Scalar, Scalar, Scalar],
+    ),
+    sig(
+        "file_mprotect",
+        "file_mprotect",
+        &[Ptr("struct vm_area_struct"), Scalar, Scalar],
+    ),
     sig("bpf_map", "bpf_map", &[Ptr("struct bpf_map"), Scalar]),
     sig("bpf_prog", "bpf_prog", &[Ptr("struct bpf_prog")]),
     // 6.15 and later, then 6.9 to 6.14.

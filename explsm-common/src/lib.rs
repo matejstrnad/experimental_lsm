@@ -34,6 +34,20 @@ pub const MAX_ROOTS: u32 = 65536;
 /// Entries of `TERMINALS`: the files the `terminal` paths resolve to.
 pub const MAX_TERMINALS: u32 = 256;
 
+/// Entries of `DENY_ARGS`: `deny_args` patterns of all apps together.
+pub const MAX_DENY_ARGS: u32 = 256;
+
+/// Values of the `TERMINALS` map: what kind of exe it is.
+pub mod term {
+    /// A terminal entry exe (`terminal`): sets [`TF_TERMINAL`](super::TF_TERMINAL)
+    /// and starts a chain of shells ([`TF_SHELL`](super::TF_SHELL)).
+    pub const TERMINAL: u32 = 1 << 0;
+    /// A shell (`shell`): keeps a chain of shells going.
+    pub const SHELL: u32 = 1 << 1;
+    /// The desktop shell (`desktop`): sets [`TF_DESKTOP`](super::TF_DESKTOP).
+    pub const DESKTOP: u32 = 1 << 2;
+}
+
 /// Identity of `explsm-agent`, outside the ids the policy assigns. The
 /// daemon only takes prompt answers from a process with this identity.
 pub const APP_AGENT: AppId = MAX_APPS - 1;
@@ -63,6 +77,9 @@ pub const SUBJECT_TERMINAL: AppId = u32::MAX - 1;
 /// are no app. A root process of an app gets that app's grants only.
 pub const SUBJECT_ROOT: AppId = u32::MAX - 2;
 
+/// `@desktop` in a [`StartKey`]: the desktop shell (`desktop` exes).
+pub const SUBJECT_DESKTOP: AppId = u32::MAX - 3;
+
 /// [`TaskInfo::flags`]: the task descends from a terminal entry exe with no
 /// app exec in between. With a controlling tty it gets `@terminal` grants.
 pub const TF_TERMINAL: u32 = 1;
@@ -71,6 +88,15 @@ pub const TF_TERMINAL: u32 = 1;
 /// since) was exec'd as an app with loader variables such as `LD_PRELOAD`,
 /// and runs unconfined. Seeding never gives it an identity.
 pub const TF_TAINTED: u32 = 2;
+
+/// [`TaskInfo::flags`]: typed in a shell. Set by a terminal entry exe, kept
+/// across execs of `shell` exes, cleared by any other exec. `started_by
+/// @terminal` needs it.
+pub const TF_SHELL: u32 = 4;
+
+/// [`TaskInfo::flags`]: the desktop shell (a `desktop` exe), until its next
+/// exec. `started_by @desktop` needs it.
+pub const TF_DESKTOP: u32 = 8;
 
 /// Bounded number of `d_parent` steps when looking for a protected root:
 /// the first 64 inline, the rest in `bpf_loop`. An object more levels deep
@@ -187,6 +213,35 @@ pub mod app_flag {
     /// belongs to no app, and their execs of its own exes are not checked
     /// for loader variables or user namespaces.
     pub const INHERIT: u32 = 1 << 0;
+    /// `code any`: processes of the app may map any file as code. Without
+    /// it only files that root alone can change, and the app's own.
+    pub const CODE_ANY: u32 = 1 << 1;
+    /// `started_by`: an exec gets the identity only when the task was
+    /// started by a subject in `STARTED_BY`.
+    pub const STARTED_BY: u32 = 1 << 2;
+    /// `deny_args`: an exec gets the identity only without an argument
+    /// that matches a pattern in `DENY_ARGS`.
+    pub const DENY_ARGS: u32 = 1 << 3;
+}
+
+/// Key of the `STARTED_BY` map: `spawner` (an app id, [`APP_UNCONFINED`],
+/// [`SUBJECT_TERMINAL`] or [`SUBJECT_DESKTOP`]) may start `app`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StartKey {
+    pub app: AppId,
+    pub spawner: AppId,
+}
+
+/// Key of the `DENY_ARGS` LPM trie: a `deny_args` pattern of `app`.
+/// `prefixlen` counts the bits of `app` (32) and of `val`: an exact pattern
+/// with its NUL, a prefix pattern (`-o*`) without.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArgKey {
+    pub prefixlen: u32,
+    pub app: AppId,
+    pub val: [u8; ENV_CHUNK],
 }
 
 /// Bytes of an `ALLOWED_ENV` string, with the NUL padding.
@@ -322,6 +377,11 @@ pub enum Op {
     /// can make it dump core. `flags` is the resource, `owner2` the target's
     /// tgid.
     Rlimit = 20,
+    /// Mapping a file as code (`mmap` with `PROT_EXEC`) that the user could
+    /// change, by an app process (`code trusted`).
+    Mmap = 21,
+    /// Making a file mapping executable (`mprotect`), likewise.
+    Mprotect = 22,
 }
 
 impl Op {
@@ -347,6 +407,8 @@ impl Op {
             18 => Self::Bpf,
             19 => Self::Signal,
             20 => Self::Rlimit,
+            21 => Self::Mmap,
+            22 => Self::Mprotect,
             _ => return None,
         })
     }
@@ -373,6 +435,8 @@ impl Op {
             Self::Bpf => "bpf",
             Self::Signal => "signal",
             Self::Rlimit => "rlimit",
+            Self::Mmap => "mmap",
+            Self::Mprotect => "mprotect",
         }
     }
 }
@@ -405,6 +469,16 @@ pub const REASON_SELF: u32 = 5;
 /// The object is too deep to find its owner ([`OWNER_UNKNOWN`]): `perms`
 /// were asked for on what may be protected data.
 pub const REASON_DEEP: u32 = 6;
+/// An [`EventKind::Exec`] of an app exe started by a subject its
+/// `started_by` does not name; `owner2` is that subject (the task's
+/// identity before the exec), `flags` its task flags.
+pub const REASON_STARTED_BY: u32 = 7;
+/// An [`EventKind::Exec`] of an app exe with an argument its `deny_args`
+/// names.
+pub const REASON_ARGS: u32 = 8;
+/// An app process mapped code from a file the user could change
+/// ([`Op::Mmap`], [`Op::Mprotect`]).
+pub const REASON_CODE: u32 = 9;
 
 /// Environment variables that make the dynamic loader run foreign code in a
 /// process. An app exec'd with one of them (non-empty) gets no identity,
@@ -539,6 +613,8 @@ const _: () = {
     assert!(size_of::<Event>() == 1176);
     assert!(size_of::<TempKey>() == 32);
     assert!(size_of::<EnvKey>() == 132);
+    assert!(size_of::<StartKey>() == 8);
+    assert!(size_of::<ArgKey>() == 136);
 };
 
 #[cfg(test)]
@@ -605,4 +681,6 @@ mod user {
     unsafe impl aya::Pod for OwnKey {}
     unsafe impl aya::Pod for DaemonPath {}
     unsafe impl aya::Pod for EnvKey {}
+    unsafe impl aya::Pod for StartKey {}
+    unsafe impl aya::Pod for ArgKey {}
 }

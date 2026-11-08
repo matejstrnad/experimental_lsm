@@ -21,6 +21,7 @@ typedef u32 app_id;
 #define MAX_EXES 1024
 #define MAX_ROOTS 65536
 #define MAX_TERMINALS 256
+#define MAX_DENY_ARGS 256
 #define APP_AGENT (MAX_APPS - 1)
 #define APP_DAEMON (MAX_APPS - 2)
 #define OWNER_PINS (MAX_APPS - 3)
@@ -32,8 +33,13 @@ typedef u32 app_id;
 #define OWNER_EXE 0x80000000u
 #define SUBJECT_TERMINAL 0xfffffffeu
 #define SUBJECT_ROOT 0xfffffffdu
+#define SUBJECT_DESKTOP 0xfffffffcu
 #define TF_TERMINAL 1
 #define TF_TAINTED 2
+/* Typed in a shell: only terminal exes and `shell` exes since the terminal. */
+#define TF_SHELL 4
+/* The desktop shell (a `desktop` exe), until its next exec. */
+#define TF_DESKTOP 8
 #define MAX_WALK 4096
 #define PATH_LEN 512
 #define MAX_CHAIN 16
@@ -56,6 +62,18 @@ typedef u32 app_id;
 
 /* APP_FLAGS bits. */
 #define AF_INHERIT 1
+/* `code any`: may map any file as code. Without it only files that root
+ * alone can change, or the app's own. */
+#define AF_CODE_ANY 2
+/* `started_by`: the identity only when started by a subject in STARTED_BY. */
+#define AF_STARTED_BY 4
+/* `deny_args`: the identity only without an argument in DENY_ARGS. */
+#define AF_DENY_ARGS 8
+
+/* TERMINALS values. */
+#define TERM_TERMINAL 1
+#define TERM_SHELL 2
+#define TERM_DESKTOP 4
 
 #define CFG_GENERATION 0
 #define CFG_ROOT_BYPASS 1
@@ -113,6 +131,8 @@ enum op {
 	OP_BPF,
 	OP_SIGNAL,
 	OP_RLIMIT,
+	OP_MMAP,
+	OP_MPROTECT,
 };
 
 #define ACTION_AUDIT 0
@@ -127,6 +147,12 @@ enum op {
 #define REASON_ENV 4
 #define REASON_SELF 5
 #define REASON_DEEP 6
+/* An exec that did not get the app's identity: started by a subject not in
+ * its started_by, or with an argument of its deny_args. */
+#define REASON_STARTED_BY 7
+#define REASON_ARGS 8
+/* Code from a file the user could change, mapped by an app. */
+#define REASON_CODE 9
 
 #define ENV_LD_PRELOAD (1 << 0)
 #define ENV_LD_LIBRARY_PATH (1 << 1)
@@ -187,6 +213,21 @@ struct env_key {
 	char val[ENV_CHUNK];
 };
 
+/* Key of DENY_ARGS, an LPM trie: an app and an argument. A pattern ends in
+ * its NUL (exact) or not (a prefix); prefixlen counts the app's bits too. */
+struct arg_key {
+	u32 prefixlen;
+	app_id app;
+	char val[ENV_CHUNK];
+};
+
+/* Key of STARTED_BY: an app and a subject that may start it (an app id,
+ * SUBJECT_TERMINAL or SUBJECT_DESKTOP). */
+struct start_key {
+	app_id app;
+	app_id spawner;
+};
+
 struct inode_cache {
 	app_id owner;
 	u32 generation;
@@ -240,5 +281,7 @@ _Static_assert(__builtin_offsetof(struct event, loginuid) == 1168, "event layout
 _Static_assert(sizeof(struct event) == 1176, "event layout");
 _Static_assert(sizeof(struct temp_key) == 32, "temp_key layout");
 _Static_assert(sizeof(struct env_key) == 132, "env_key layout");
+_Static_assert(sizeof(struct arg_key) == 136, "arg_key layout");
+_Static_assert(sizeof(struct start_key) == 8, "start_key layout");
 
 #endif

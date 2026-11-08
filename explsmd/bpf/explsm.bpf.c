@@ -150,7 +150,9 @@ struct {
 	__type(value, u32);
 } GRANTS SEC(".maps");
 
-/* Terminal entry exes (dev, ino): terminal emulators, sshd, login. */
+/* Terminal entry exes (dev, ino): terminal emulators, sshd, login
+ * (TERM_TERMINAL), and the shells (TERM_SHELL) and desktop shells
+ * (TERM_DESKTOP) of the policy. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -198,6 +200,25 @@ struct {
 	__type(key, struct file_key);
 	__type(value, app_id);
 } EXE_PATHS SEC(".maps");
+
+/* (app, spawner) pairs of started_by: who may start an AF_STARTED_BY app. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, MAX_GRANTS);
+	__type(key, struct start_key);
+	__type(value, u32);
+} STARTED_BY SEC(".maps");
+
+/* deny_args patterns of AF_DENY_ARGS apps, matched against each argument. */
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(max_entries, MAX_DENY_ARGS);
+	__type(key, struct arg_key);
+	__type(value, u32);
+} DENY_ARGS SEC(".maps");
 
 /* explsm's own maps, programs and links by id: only the daemon may get a
  * file descriptor for them. */
@@ -298,6 +319,12 @@ static __always_inline int inherits(app_id app)
 		return 0;
 	u32 *flags = bpf_map_lookup_elem(&APP_FLAGS, &app);
 	return flags && (*flags & AF_INHERIT);
+}
+
+static __always_inline u32 app_flags(app_id app)
+{
+	u32 *flags = bpf_map_lookup_elem(&APP_FLAGS, &app);
+	return flags ? *flags : 0;
 }
 
 static __always_inline struct file_key file_key(struct inode *inode)
@@ -943,6 +970,79 @@ static __attribute__((noinline)) u32 tainted_env(struct linux_binprm *bprm,
 	return s.found;
 }
 
+/* Most arguments of an exec checked against DENY_ARGS. */
+#define ARG_STEPS 1024
+
+struct arg_scan {
+	u64 pos;
+	u64 end;
+	u32 idx;
+	u32 argc;
+	u32 found;
+	u32 _pad;
+	struct arg_key key;
+};
+
+/* Look up one argument in DENY_ARGS. A longer argument is cut to a chunk,
+ * which a prefix pattern still matches. */
+static long arg_step(u64 index, void *data)
+{
+	struct arg_scan *s = data;
+	if (s->idx >= s->argc || s->pos >= s->end)
+		return 1;
+	__builtin_memset(s->key.val, 0, ENV_CHUNK);
+	long n = bpf_probe_read_user_str(s->key.val, ENV_CHUNK, (void *)s->pos);
+	if (n <= 0)
+		return 1;
+	s->key.prefixlen = 32 + 8 * (u32)n;
+	if (bpf_map_lookup_elem(&DENY_ARGS, &s->key)) {
+		s->found = 1;
+		return 1;
+	}
+	if (n == ENV_CHUNK) {
+		/* Skip the rest of a long argument. */
+		long m = bpf_probe_read_user_str(s->key.val, ENV_CHUNK,
+						 (void *)(s->pos + ENV_CHUNK - 1));
+		/* Longer still: give up on the rest of argv. */
+		if (m <= 0 || m == ENV_CHUNK)
+			return 1;
+		s->pos += ENV_CHUNK - 1 + m;
+	} else {
+		s->pos += n;
+	}
+	s->idx++;
+	return 0;
+}
+
+/* Whether an argument of bprm matches a deny_args pattern of app. */
+static __attribute__((noinline)) int denied_arg(struct linux_binprm *bprm, app_id app)
+{
+	struct arg_scan s = {
+		.pos = bprm->p,
+		.end = bprm->exec,
+		.argc = bprm->argc,
+		.key.app = app,
+	};
+	bpf_loop(ARG_STEPS, arg_step, &s, 0);
+	return s.found;
+}
+
+/* Whether a task with identity spawner and task flags flags (before its
+ * exec) may start app. */
+static __always_inline int may_start(app_id app, app_id spawner, u32 flags)
+{
+	struct start_key key = { .app = app, .spawner = spawner };
+	if (bpf_map_lookup_elem(&STARTED_BY, &key))
+		return 1;
+	key.spawner = SUBJECT_TERMINAL;
+	if ((flags & TF_SHELL) && bpf_map_lookup_elem(&STARTED_BY, &key))
+		return 1;
+	key.spawner = SUBJECT_DESKTOP;
+	if ((flags & TF_DESKTOP) && bpf_map_lookup_elem(&STARTED_BY, &key))
+		return 1;
+	return 0;
+}
+
 /* Whether bprm is root running explsmd from its install path. */
 static __attribute__((noinline)) int is_daemon_path(struct linux_binprm *bprm)
 {
@@ -1032,17 +1132,63 @@ int LSM_PROG(bprm_committed_creds, struct linux_binprm *bprm)
 		return 0;
 	}
 
+	/* Who started it (started_by) and with what (deny_args). The
+	 * spawner is the identity the task had before this exec: what forked
+	 * it, or what it ran before in the same task. */
+	u32 af = app_flags(app);
+	u32 why = 0;
+	app_id spawner = prev;
+	u32 prev_flags = cur ? cur->flags : 0;
+	if (app != APP_UNCONFINED && (af & AF_STARTED_BY) &&
+	    !may_start(app, spawner, prev_flags))
+		why = REASON_STARTED_BY;
+	if (app != APP_UNCONFINED && !why && (af & AF_DENY_ARGS) && denied_arg(bprm, app))
+		why = REASON_ARGS;
+	if (why) {
+		int deny = enforcing(app);
+		struct event *ev = new_event(EV_EXEC, app, APP_UNCONFINED);
+		if (ev) {
+			ev->owner2 = spawner;
+			ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+			ev->reason = why;
+			ev->flags = prev_flags;
+			ev->file = key;
+			ev->path.kind = PATH_FULL;
+			ev->path.len = bpf_probe_read_kernel_str(ev->path.buf, PATH_LEN,
+								 bprm->filename);
+			bpf_ringbuf_submit(ev, 0);
+		}
+		if (deny) {
+			bump(STAT_ENV_DROPPED);
+			struct task_info *info = bpf_task_storage_get(
+				&TASKS, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
+			if (info) {
+				info->app_id = APP_UNCONFINED;
+				info->flags = TF_TAINTED;
+			}
+			return 0;
+		}
+	}
+
 	if (app == APP_UNCONFINED) {
-		int terminal = !!bpf_map_lookup_elem(&TERMINALS, &key);
+		u32 *tv = bpf_map_lookup_elem(&TERMINALS, &key);
+		u32 term = tv ? *tv : 0;
 		/* Unknown exe: drop any identity inherited across fork, keep
-		 * the terminal flag. */
+		 * the terminal flag. A terminal starts a chain of shells, a
+		 * shell keeps it, anything else ends it. */
 		struct task_info *info = bpf_task_storage_get(
 			&TASKS, task, NULL,
-			terminal ? BPF_LOCAL_STORAGE_GET_F_CREATE : 0);
+			term ? BPF_LOCAL_STORAGE_GET_F_CREATE : 0);
 		if (info) {
+			u32 flags = info->flags & ~TF_DESKTOP;
 			info->app_id = APP_UNCONFINED;
-			if (terminal)
-				info->flags |= TF_TERMINAL;
+			if (term & TERM_TERMINAL)
+				flags |= TF_TERMINAL | TF_SHELL;
+			else if (!(term & TERM_SHELL))
+				flags &= ~TF_SHELL;
+			if (term & TERM_DESKTOP)
+				flags |= TF_DESKTOP;
+			info->flags = flags;
 		}
 		return 0;
 	}
@@ -1069,6 +1215,128 @@ int LSM_PROG(task_alloc, struct task_struct *child, u64 clone_flags, int retval)
 			bump(STAT_FORKS);
 	}
 	return retval;
+}
+
+#define PROT_EXEC 4
+#define FUSE_SUPER_MAGIC 0x65735546
+#define S_IWGRP 00020
+#define S_IWOTH 00002
+
+/* Names from d up, like name_chain, for a d that is no trusted pointer. */
+static __always_inline void probe_chain(struct ev_path *out, struct dentry *d)
+{
+	u32 off = 0;
+	u32 kind = PATH_CHAIN;
+	for (int i = 0; i < MAX_CHAIN; i++) {
+		struct dentry *parent = NULL;
+		const unsigned char *name = NULL;
+		if (bpf_probe_read_kernel(&parent, sizeof(parent), &d->d_parent) || !parent)
+			break;
+		if (parent == d) {
+			kind = PATH_CHAIN_COMPLETE;
+			break;
+		}
+		if (off >= CHAIN_HALF)
+			break;
+		if (bpf_probe_read_kernel(&name, sizeof(name), &d->d_name.name))
+			break;
+		long n = bpf_probe_read_kernel_str(out->buf + (off & (CHAIN_HALF - 1)),
+						   CHAIN_HALF, name);
+		if (n <= 0)
+			break;
+		off += n;
+		d = parent;
+	}
+	out->kind = kind;
+	out->len = off;
+}
+
+/* An app may map a file as code only if root alone can change it (owned by
+ * root, not writable by group or others, not on FUSE, where the mounter
+ * says who owns what), or the file is the app's own (its exe, its data),
+ * unless it is `code any`. Anonymous memory (JITs) is left alone. Every
+ * read goes through bpf_probe_read_kernel: f may be no trusted pointer
+ * (vm_file), and is never NULL here. */
+static __attribute__((noinline)) int code_check(u32 op, u64 fp)
+{
+	app_id subject = current_app();
+	if (subject == APP_UNCONFINED || subject >= OWNER_UNKNOWN)
+		return 0;
+	if (app_flags(subject) & AF_CODE_ANY)
+		return 0;
+	struct file *f = (struct file *)fp;
+	struct inode *ino = NULL;
+	struct dentry *d = NULL;
+	struct super_block *sb = NULL;
+	kuid_t uid = { .val = 1 };
+	umode_t mode = 0;
+	unsigned long magic = 0;
+	if (bpf_probe_read_kernel(&ino, sizeof(ino), &f->f_inode) || !ino ||
+	    bpf_probe_read_kernel(&d, sizeof(d), &f->f_path.dentry) || !d ||
+	    bpf_probe_read_kernel(&sb, sizeof(sb), &ino->i_sb) || !sb)
+		return 0;
+	bpf_probe_read_kernel(&uid, sizeof(uid), &ino->i_uid);
+	bpf_probe_read_kernel(&mode, sizeof(mode), &ino->i_mode);
+	bpf_probe_read_kernel(&magic, sizeof(magic), &sb->s_magic);
+	if (uid.val == 0 && !(mode & (S_IWGRP | S_IWOTH)) && magic != FUSE_SUPER_MAGIC)
+		return 0;
+	struct deep_walk w = { .cur = d, .owner = OWNER_UNKNOWN };
+	bpf_loop(MAX_WALK, deep_step, &w, 0);
+	if ((w.owner & ~OWNER_EXE) == subject)
+		return 0;
+
+	int deny = enforcing(subject);
+	struct event *ev = new_event(EV_ACCESS, subject, w.owner);
+	if (ev) {
+		ev->op = op;
+		ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+		ev->reason = REASON_CODE;
+		positive_key(d, &ev->file);
+		probe_chain(&ev->path, d);
+		bpf_ringbuf_submit(ev, 0);
+	}
+	if (deny) {
+		bump(STAT_DENIED);
+		return -EACCES;
+	}
+	bump(STAT_AUDITED);
+	return 0;
+}
+
+/* The file argument is read from the context as a number: NULL for an
+ * anonymous mapping, and no pointer the verifier may assume is set. */
+SEC("lsm/mmap_file")
+int mmap_file(u64 *ctx)
+{
+	int retval = (int)ctx[4];
+	if (retval)
+		return retval;
+	u64 fp = 0;
+	unsigned long prot = 0;
+	bpf_probe_read_kernel(&fp, sizeof(fp), &ctx[0]);
+	bpf_probe_read_kernel(&prot, sizeof(prot), &ctx[2]);
+	if (!(prot & PROT_EXEC) || !fp)
+		return 0;
+	return code_check(OP_MMAP, fp);
+}
+
+SEC("lsm/file_mprotect")
+int file_mprotect(u64 *ctx)
+{
+	int retval = (int)ctx[3];
+	if (retval)
+		return retval;
+	struct vm_area_struct *vma = NULL;
+	u64 fp = 0;
+	unsigned long prot = 0;
+	bpf_probe_read_kernel(&vma, sizeof(vma), &ctx[0]);
+	bpf_probe_read_kernel(&prot, sizeof(prot), &ctx[2]);
+	if (!(prot & PROT_EXEC) || !vma)
+		return 0;
+	bpf_probe_read_kernel(&fp, sizeof(fp), &vma->vm_file);
+	if (!fp)
+		return 0;
+	return code_check(OP_MPROTECT, fp);
 }
 
 SEC("lsm/file_open")

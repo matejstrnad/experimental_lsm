@@ -68,10 +68,12 @@ struct task_struct {
 
 struct super_block {
 	dev_t s_dev;
+	unsigned long s_magic;
 };
 
 struct inode {
 	umode_t i_mode;
+	kuid_t i_uid;
 	unsigned long i_ino;
 	struct super_block *i_sb;
 };
@@ -95,6 +97,10 @@ struct file {
 	struct path f_path;
 	struct inode *f_inode;
 	unsigned int f_flags;
+};
+
+struct vm_area_struct {
+	struct file *vm_file;
 };
 
 struct linux_binprm {
