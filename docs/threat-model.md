@@ -130,7 +130,7 @@ whatever the policy explicitly grants.
 - **`@terminal` can be spoofed** by same-user malware that spawns a terminal
   emulator. Prefer prompts or explicit grants for sensitive data.
 - **Very deep trees are guarded blindly.** The owner of an object is found
-  by walking up at most 64 parent directories. An object deeper than that
+  by walking up at most 4096 parent directories. An object deeper than that
   (from its root, or from wherever the walk started outside any root) may be
   protected data, so its owner is `unknown`: while any app is in enforce
   mode, only root with the bypass on and `*` grants get through, not even an

@@ -17,7 +17,7 @@ of audit logs; don't treat it as a boundary against root.**
 | The Landlock sandbox refuses something explsmd needs at runtime | Low | That one operation fails with `EACCES` and a warning in the journal (e.g. a claim not written); enforcement goes on. | `systemctl edit explsmd` and add `--no-landlock` to `ExecStart`; report it. |
 | The `/proc` helper (`explsmd-proc`) dies | Very low | A warning; running processes of exes added later are not seeded (their app is denied its data until restarted), and prompts may show a process name instead of its exe path. | `systemctl restart explsmd`. |
 | The ring buffer fills (a denial storm) | Low | Events are dropped and counted (`dropped` in `explsmctl status`); decisions are not affected. | — |
-| Slower file system access | Unmeasured | Every `open` and inode operation runs a hook; owners are cached per inode, misses walk up to 64 parent dentries. | Measure (`find ~`, a large build) before and after; planned for Phase 7. |
+| Slower file system access | Unmeasured | Every `open` and inode operation runs a hook; owners are cached per inode, misses walk up to 4096 parent dentries (past 64 in `bpf_loop`). | Measure (`find ~`, a large build) before and after; planned for Phase 7. |
 | Package upgrade | Certain, briefly | `prerm` unloads explsm; it is off for the seconds dpkg takes. | — |
 
 With the shipped (empty) policy, explsmd only guards its own files and

@@ -68,9 +68,10 @@ pub const TF_TERMINAL: u32 = 1;
 /// and runs unconfined. Seeding never gives it an identity.
 pub const TF_TAINTED: u32 = 2;
 
-/// Bounded number of `d_parent` steps when looking for a protected root.
-/// An object more levels deep than this is owned by [`OWNER_UNKNOWN`].
-pub const MAX_WALK: u32 = 64;
+/// Bounded number of `d_parent` steps when looking for a protected root:
+/// the first 64 inline, the rest in `bpf_loop`. An object more levels deep
+/// than this is owned by [`OWNER_UNKNOWN`].
+pub const MAX_WALK: u32 = 4096;
 
 /// Bytes reserved for a path in an [`Event`], including the trailing NUL.
 pub const PATH_LEN: usize = 512;

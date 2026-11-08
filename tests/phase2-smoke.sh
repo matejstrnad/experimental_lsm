@@ -32,9 +32,17 @@ echo outside > "$O/file"
 DEEP=$E/deep$(printf '/d%.0s' $(seq 60)) # MAX_WALK is 64
 mkdir -p "$DEEP"
 echo deep > "$DEEP/file"
-DEEPER=$O/deeper$(printf '/d%.0s' $(seq 70)) # beyond MAX_WALK, unprotected
+# Beyond the inline steps of the walk (64), within MAX_WALK (4096).
+DEEPER=$E/deeper$(printf '/d%.0s' $(seq 100))
 mkdir -p "$DEEPER"
 echo deeper > "$DEEPER/file"
+OUTDEEP=$O/deeper$(printf '/d%.0s' $(seq 100)) # unprotected
+mkdir -p "$OUTDEEP"
+echo deeper > "$OUTDEEP/file"
+# Beyond MAX_WALK: longer than PATH_MAX, so made (and read) a step at a time.
+ABYSS=$O/abyss
+mkdir "$ABYSS"
+(cd "$ABYSS" && for _ in $(seq 4100); do mkdir d && cd d || exit 1; done && echo abyss > file)
 # Private copies, so their inodes identify the apps without also matching
 # every system binary. Named like the originals for multi-call coreutils.
 for b in cat mv ln bash; do cp "$(type -P $b)" "$OB/$b"; done
@@ -223,12 +231,19 @@ run nobody /usr/bin/cat "$DEEP/file"
 denied && has "need=read $DEEP/file\$"
 check "foreign read 60 levels below the root is denied" $? "rc=$rc $ev"
 
+run nobody /usr/bin/cat "$DEEPER/file"
+denied && has "owner=owner open\(r\) need=read $DEEPER/file\$"
+check "foreign read 100 levels below the root is denied (bpf_loop walk)" $? "rc=$rc $ev"
+run nobody /usr/bin/cat "$OUTDEEP/file"
+[[ $rc -eq 0 ]] && quiet
+check "an unprotected file 100 levels deep is not" $? "rc=$rc $ev"
+
 # Beyond MAX_WALK the owner can't be told, so it is "unknown", enforced
 # because an app is, and walked again each time.
 for i in 1 2; do
-    run nobody /usr/bin/cat "$DEEPER/file"
-    denied && has "owner=unknown open\(r\) need=deep\(read\) .*/d/d/file\$"
-    check "read 70 levels deep is denied as unknown (try $i)" $? "rc=$rc $ev"
+    run nobody bash -c "cd '$ABYSS' && for _ in \$(seq 4100); do cd d || exit 9; done && /usr/bin/cat file"
+    denied && has "owner=unknown open\(r\) need=deep\(read\)"
+    check "read 4100 levels deep is denied as unknown (try $i)" $? "rc=$rc $ev"
 done
 
 # --- audit mode ------------------------------------------------------------

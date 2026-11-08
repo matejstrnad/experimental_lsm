@@ -367,18 +367,69 @@ static __always_inline void bump_generation(void)
 		*p += 1;
 }
 
+/* Steps of the walk taken inline, through trusted pointers; deeper trees go
+ * on in bpf_loop (deep_step) up to MAX_WALK. */
+#define WALK_INLINE 64
+
+struct deep_walk {
+	struct dentry *cur;
+	app_id owner;
+	u32 done;
+};
+
+/* One step of a walk beyond WALK_INLINE. A pointer kept in the loop's
+ * context is no trusted pointer to the verifier any more, so the fields
+ * are read with bpf_probe_read_kernel (still CO-RE relocated). A read that
+ * fails ends the walk undone: the owner stays unknown. */
+static long deep_step(u64 index, void *data)
+{
+	struct deep_walk *w = data;
+	struct dentry *d = w->cur;
+	struct inode *ino = NULL;
+	if (bpf_probe_read_kernel(&ino, sizeof(ino), &d->d_inode))
+		return 1;
+	if (ino) {
+		struct super_block *sb = NULL;
+		unsigned long i_ino = 0;
+		dev_t dev = 0;
+		if (bpf_probe_read_kernel(&sb, sizeof(sb), &ino->i_sb) ||
+		    bpf_probe_read_kernel(&i_ino, sizeof(i_ino), &ino->i_ino) ||
+		    bpf_probe_read_kernel(&dev, sizeof(dev), &sb->s_dev))
+			return 1;
+		struct file_key key = { .dev = dev, .ino = i_ino };
+		app_id *owner = bpf_map_lookup_elem(&ROOTS, &key);
+		if (owner) {
+			w->owner = *owner;
+			w->done = 1;
+			return 1;
+		}
+	}
+	struct dentry *parent = NULL;
+	if (bpf_probe_read_kernel(&parent, sizeof(parent), &d->d_parent) || !parent)
+		return 1;
+	if (parent == d) {
+		w->owner = APP_UNCONFINED;
+		w->done = 1;
+		return 1;
+	}
+	w->cur = parent;
+	return 0;
+}
+
 /* Owner of the object at d: walk from d towards the filesystem root and stop
  * at the first root in ROOTS. A negative dentry (an object about to be
- * created) gets its parent's owner. A walk that runs out may have been on
- * its way to a root, so the owner is OWNER_UNKNOWN, which nobody but root
- * with the bypass (and `*` grants) may touch while any app is enforced.
+ * created) gets its parent's owner. The first WALK_INLINE steps are taken
+ * inline, the rest, up to MAX_WALK, in bpf_loop. A walk that runs out may
+ * have been on its way to a root, so the owner is OWNER_UNKNOWN, which
+ * nobody but root with the bypass (and `*` grants) may touch while any app
+ * is enforced.
  *
  * Uncached: inode storage only takes trusted inode pointers (hook arguments,
  * file->f_inode), not ones reached through d_inode. */
 static __always_inline app_id walk_owner(struct dentry *d)
 {
 	struct dentry *cur = d;
-	for (int i = 0; i < MAX_WALK; i++) {
+	for (int i = 0; i < WALK_INLINE; i++) {
 		struct inode *ino = cur->d_inode;
 		if (ino) {
 			app_id *owner = root_of(ino);
@@ -390,8 +441,11 @@ static __always_inline app_id walk_owner(struct dentry *d)
 			return APP_UNCONFINED;
 		cur = parent;
 	}
-	bump(STAT_WALK_EXHAUSTED);
-	return OWNER_UNKNOWN;
+	struct deep_walk w = { .cur = cur, .owner = OWNER_UNKNOWN };
+	bpf_loop(MAX_WALK - WALK_INLINE, deep_step, &w, 0);
+	if (!w.done)
+		bump(STAT_WALK_EXHAUSTED);
+	return w.owner;
 }
 
 /* Owner of ino, a trusted inode pointer, whose dentry is d: from the inode

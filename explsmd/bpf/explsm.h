@@ -33,7 +33,7 @@ typedef u32 app_id;
 #define SUBJECT_TERMINAL 0xfffffffeu
 #define TF_TERMINAL 1
 #define TF_TAINTED 2
-#define MAX_WALK 64
+#define MAX_WALK 4096
 #define PATH_LEN 512
 #define MAX_CHAIN 16
 #define LABEL_XATTR "security.bpf.explsm"
