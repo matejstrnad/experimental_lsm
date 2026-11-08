@@ -44,6 +44,7 @@ install -Dm644 docs/dsl.md "$DOC/dsl.md"
 install -Dm644 docs/threat-model.md "$DOC/threat-model.md"
 install -Dm644 docs/production-review.md "$DOC/production-review.md"
 install -Dm644 packaging/example.explsm "$DOC/examples/ssh.explsm"
+install -Dm644 packaging/dpkg.explsm "$DOC/examples/dpkg.explsm"
 install -Dm644 packaging/deb/copyright "$DOC/copyright"
 
 for script in postinst prerm postrm; do

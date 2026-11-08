@@ -57,9 +57,10 @@
  *   above it that a user could (EXE_PATHS); the exe itself is in ROOTS like
  *   owned data.
  * - explsm's own files are owned by APP_DAEMON (readable by all, changed by
- *   the daemon, or root with the bypass) and the pin directory by OWNER_PINS
- *   (changed by the daemon only). Only the daemon may get a file descriptor
- *   for explsm's maps, programs and links (OWN_IDS).
+ *   the daemon, apps granted @explsm, or root with the bypass) and the pin
+ *   directory by OWNER_PINS (changed by the daemon only). Only the daemon
+ *   may get a file descriptor for explsm's maps, programs and links
+ *   (OWN_IDS).
  *
  * Kernel struct accesses are CO-RE relocated (see vmlinux.h), so the object
  * runs on any kernel with BTF. Programs name their hook's arguments
@@ -571,13 +572,23 @@ static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 	}
 	bump(STAT_FOREIGN);
 	/* explsm's own files: anyone may read them, only the daemon may change
-	 * them; root too with the bypass, except for the pins. No grants. */
+	 * them, and an app granted @explsm (dpkg, for upgrades); root too with
+	 * the bypass. The pins only the daemon, with no grants and no bypass.
+	 * Only grants for exactly this owner count: `*` is the apps' data. */
 	if (owner == APP_DAEMON || owner == OWNER_PINS) {
 		perms &= ~(PERM_READ | PERM_LIST);
 		if (!perms || subject == APP_DAEMON)
 			return 0;
 		if (owner == OWNER_PINS)
 			return perms;
+		if (subject != APP_UNCONFINED) {
+			struct grant_key key = { .subject = subject, .owner = APP_DAEMON };
+			u32 *own = bpf_map_lookup_elem(&GRANTS, &key);
+			if (own)
+				perms &= ~*own;
+			if (!perms)
+				return 0;
+		}
 		return unless_bypass(perms);
 	}
 	u32 lacking = perms & ~granted(subject, owner);

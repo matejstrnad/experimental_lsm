@@ -8,9 +8,10 @@
 # upgrade: only stop explsmd. The pinned programs go on enforcing while dpkg
 # replaces the files, which root may with the bypass on or in audit mode,
 # and postinst lets the new explsmd take over if its map layout is the same
-# (otherwise it unloads then). With the bypass off, or no daemon to ask,
-# explsm is unloaded as for a removal and is off for the few seconds an
-# upgrade takes.
+# (otherwise it unloads then). With the bypass off that needs dpkg to be an
+# app granted explsm's own files (examples/dpkg.explsm), which status shows
+# as `dpkg -> explsmd: …`. Otherwise, or with no daemon to ask, explsm is
+# unloaded as for a removal and is off for the few seconds an upgrade takes.
 set -e
 
 # Through the daemon, or, with none running, by the installed explsmd.
@@ -29,10 +30,19 @@ stop() {
     fi
 }
 
+# Whether dpkg gets to replace explsm's files with explsm loaded: perms are
+# listed in the order read, write, create, delete, rename, list, setattr.
+dpkg_may() {
+    [ -x /usr/bin/explsmctl ] || return 1
+    status=$(explsmctl status 2>/dev/null) || return 1
+    printf '%s\n' "$status" | grep -Eq '^root bypass (on|audit)' && return 0
+    printf '%s\n' "$status" |
+        grep -Eq '^  dpkg -> explsmd: (all|.*write, create, delete, rename)'
+}
+
 case "$1" in
 upgrade|failed-upgrade)
-    if ! { [ -x /usr/bin/explsmctl ] &&
-        explsmctl status 2>/dev/null | grep -Eq '^root bypass (on|audit)'; }; then
+    if ! dpkg_may; then
         unload
     fi
     stop

@@ -547,9 +547,10 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         }
         let owner = match g.owner.value.as_str() {
             "*" => Ok(OWNER_ANY),
+            "@explsm" => Ok(APP_DAEMON),
             o if o.starts_with('@') => Err(Diagnostic::error(
                 g.owner.span,
-                "the owner of a grant must be an app or `*`",
+                "the owner of a grant must be an app, `@explsm` or `*`",
             )),
             _ => app_id(&g.owner, &apps, "owner"),
         };
@@ -562,6 +563,17 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         }
         match (subject, owner) {
             (Ok(subject), Ok(owner)) => {
+                // explsm's own files: only to an app such as dpkg, never
+                // to every unconfined or root process.
+                if owner == APP_DAEMON && !(1..=MAX_NAMES as AppId).contains(&subject) {
+                    diags.push(
+                        Diagnostic::error(g.subject.span, "only an app can be granted `@explsm`")
+                            .label("a builtin subject")
+                            .note("define an app for the program that changes explsm's files, \
+                                   e.g. `app dpkg { exe \"/usr/bin/dpkg\" }`"),
+                    );
+                    continue;
+                }
                 if subject == owner {
                     diags.push(
                         Diagnostic::error(g.span, format!("{} already owns its data", g.subject.value))
@@ -937,7 +949,7 @@ mod tests {
         assert_eq!(grant("@nobody read to a"), ["unknown builtin `@nobody`"]);
         assert_eq!(
             grant("a read to @unconfined"),
-            ["the owner of a grant must be an app or `*`"]
+            ["the owner of a grant must be an app, `@explsm` or `*`"]
         );
         assert_eq!(grant("a read to a"), ["a already owns its data"]);
     }
@@ -1058,6 +1070,32 @@ mod tests {
     }
 
     #[test]
+    fn explsm_grants() {
+        let c = compiled(
+            "app dpkg { exe \"/usr/bin/dpkg\" }\n\
+             grant dpkg write, create, delete, rename, setattr to @explsm",
+        );
+        assert_eq!(
+            c.grants[&GrantKey {
+                subject: 1,
+                owner: APP_DAEMON
+            }],
+            perm::WRITE | perm::CREATE | perm::DELETE | perm::RENAME | perm::SETATTR
+        );
+        assert_eq!(c.name(APP_DAEMON), "explsmd");
+        for subject in ["@root", "@unconfined", "@terminal"] {
+            assert_eq!(
+                errors(&format!("terminal \"/t\"\ngrant {subject} write to @explsm")),
+                ["only an app can be granted `@explsm`"]
+            );
+        }
+        assert_eq!(
+            errors("app a { exe \"/a\" }\ngrant a read to @explsmd"),
+            ["the owner of a grant must be an app, `@explsm` or `*`"]
+        );
+    }
+
+    #[test]
     fn root_grants() {
         let c = compiled(
             "app a { exe \"/a\" }\ngrant @root read, list to a\ngrant @root list to *\n\
@@ -1082,7 +1120,7 @@ mod tests {
         assert_eq!(errors("app root { exe \"/r\" }"), ["`root` is a reserved name"]);
         assert_eq!(
             errors("app a { exe \"/a\" }\ngrant a read to @root"),
-            ["the owner of a grant must be an app or `*`"]
+            ["the owner of a grant must be an app, `@explsm` or `*`"]
         );
     }
 

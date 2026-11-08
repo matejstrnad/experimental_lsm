@@ -110,7 +110,18 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
             seen.example,
             procs.join(", ")
         );
-        if *subject == "unconfined" {
+        // explsm's own files (owner explsmd) are granted as `@explsm`, and
+        // only to apps.
+        let own = app == "explsmd";
+        let target = if own { "@explsm" } else { app };
+        if own && matches!(*subject, "unconfined" | "root") {
+            out.push_str(&format!(
+                "# {subject} processes needed {} on explsm's own files ({comment})\n\
+                 # only an app can be granted @explsm: define one for the program \
+                 (see examples/dpkg.explsm)\n",
+                perm_list(seen.perms),
+            ));
+        } else if *subject == "unconfined" {
             out.push_str(&format!(
                 "# unconfined processes needed {} ({comment})\n\
                  # define an app for them and grant it, or (broad):\n\
@@ -122,7 +133,7 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
             // Builtin subjects other than @unconfined.
             let subject = if *subject == "root" { "@root" } else { subject };
             out.push_str(&format!(
-                "grant {subject} {} to {app}    # {comment}\n",
+                "grant {subject} {} to {target}    # {comment}\n",
                 perm_list(seen.perms).replace(' ', "")
             ));
         }
@@ -179,6 +190,22 @@ not json
              # grant @unconfined read,write to ssh\n\
              # 1 other event can't be granted (unknown need)\n\
              # 1 xdev event can't be granted (rename or link across owners)\n"
+        );
+    }
+
+    #[test]
+    fn grants_explsms_own_files_to_apps_only() {
+        let records = [
+            rec("dpkg", "delete", "dpkg", "/usr/sbin/explsmd.dpkg-tmp"),
+            rec("root", "write", "vim", "/etc/explsm/policy.d/a.explsm"),
+        ];
+        assert_eq!(
+            suggest("explsmd", &records),
+            "grant dpkg delete to @explsm    # 1 event, e.g. /usr/sbin/explsmd.dpkg-tmp; from dpkg (1)\n\
+             # root processes needed write on explsm's own files (1 event, e.g. \
+             /etc/explsm/policy.d/a.explsm; from vim (1))\n\
+             # only an app can be granted @explsm: define one for the program \
+             (see examples/dpkg.explsm)\n"
         );
     }
 

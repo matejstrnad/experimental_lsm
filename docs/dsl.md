@@ -143,10 +143,30 @@ Lets `SUBJECT` access the data of `OWNER`. Grants for the same pair add up.
 - **PERMS**: comma-separated, from `read`, `write`, `create`, `delete`,
   `rename`, `list` (read a directory), `setattr` (mode, owner, times,
   xattrs, ACLs), or `all`. Truncation counts as `write`.
-- **OWNER**: an app, or `*` for every app's data.
+- **OWNER**: an app, `*` for every app's data, or `@explsm` for explsm's
+  own files (see below).
 
 An app always has full access to its own data; granting it to itself is an
 error.
+
+`@explsm` is explsm's own files: the policy and claims directories,
+`/var/lib/explsm`, explsm's binaries, unit files and bus policy. Anyone may
+read them; only explsmd changes them, and root while the root bypass is `on`
+or `audit`. With `root_bypass off`, a grant to `@explsm` lets an app change
+them, so that package upgrades work:
+
+```
+# /usr/share/doc/explsm/examples/dpkg.explsm
+app dpkg { exe "/usr/bin/dpkg" }
+grant dpkg write, create, delete, rename, setattr to @explsm
+```
+
+Only an app can be granted `@explsm` (not `@unconfined`, `@root` or
+`@terminal`), and `*` grants don't cover it. Such a grant is a grant to
+everything the app runs as: for dpkg, every package root installs. The
+pin directory can't be granted to anyone. With that grant, explsm's
+`prerm` keeps explsm loaded across an upgrade with `root_bypass off`, as it
+does with the bypass.
 
 Moving data between owners can't be granted: a rename or hard link whose
 source and destination have different owners fails with `EXDEV`, so `mv`
@@ -193,8 +213,8 @@ bypassed, nor the pin directory.
 - `off`: root is checked like any other process: a root process that is no
   app is `@root` and has the `@root` and `@unconfined` grants (and
   `@terminal` ones on a terminal), a root process of an app has its app's.
-  It can't change explsm's own files either, nor ptrace or core-dump an
-  app's processes.
+  It can't change explsm's own files either (except as an app granted
+  `@explsm`), nor ptrace or core-dump an app's processes.
 
 `explsmd --no-root-bypass` turns it off regardless.
 

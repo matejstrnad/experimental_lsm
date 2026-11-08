@@ -310,7 +310,21 @@ check "a first start that fails pins nothing" "$([[ $? -eq 0 && ! -e $PIN ]]; ec
     "$(ls "$PIN" 2>&1) $(tail -3 "$ERR")"
 
 # --- self-protection, bypass off ----------------------------------------------
+# An app granted explsm's own files, as dpkg is in examples/dpkg.explsm.
+mkdir -p "$DIR/pkg-bin"
+cp "$(type -P mv)" "$DIR/pkg-bin/mv"
+cat >> "$DIR/policy.explsm" <<EOF
+app pkg { exe "$DIR/pkg-bin/mv" }
+grant pkg write, create, delete, rename, setattr to @explsm
+EOF
 start --no-root-bypass
+cp "$CTL" "$SB/explsmctl.new"
+mv "$SB/explsmctl.new" "$CTL" 2> /dev/null
+rc=$?
+check "root can't replace explsmctl (bypass off)" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
+"$DIR/pkg-bin/mv" "$SB/explsmctl.new" "$CTL" 2> /dev/null
+rc=$?
+check "an app granted @explsm can (bypass off)" "$([[ $rc -eq 0 && ! -e $SB/explsmctl.new ]]; echo $?)" "rc=$rc"
 echo "# root was here" >> "$DIR/policy.explsm" 2> /dev/null
 rc=$?
 check "root can't edit the policy (bypass off)" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"

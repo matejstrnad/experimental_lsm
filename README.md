@@ -106,7 +106,8 @@ Removing the package turns explsm off first (`explsmctl unload` in
 `prerm`). Upgrading it only stops explsmd: the pinned programs go on
 enforcing while dpkg replaces the files, and the new explsmd takes them over
 if its map layout is the same (`explsmd --check-layout`); if it is not, or
-with `root_bypass off` (dpkg could not replace explsm's files), explsm is
+with `root_bypass off` and no grant to `@explsm` for dpkg (dpkg could not
+replace explsm's files; see `examples/dpkg.explsm`), explsm is
 unloaded and off for the few seconds dpkg takes. `apt purge`
 also removes `/var/lib/explsm` and `/etc/explsm/claims.d`; your policy files
 stay.
@@ -214,7 +215,10 @@ path is refused the pinned state, so `explsmctl unload` first (or reboot).
 - Its files: the policy and claims directories, `/var/lib/explsm`, the
   explsmd, explsm-agent and explsmctl binaries, its unit files and bus policy.
   Anyone may read them; only explsmd may change them, and root while the
-  root bypass is `on` or `audit` (so package upgrades work). **With `root_bypass off`,
+  root bypass is `on` or `audit` (so package upgrades work), or an app
+  granted `@explsm`: with `root_bypass off`, install
+  `/usr/share/doc/explsm/examples/dpkg.explsm` in `/etc/explsm/policy.d` so
+  that upgrades work without unloading explsm. **With `root_bypass off`,
   root can't edit the policy either**: `explsmctl unload` (or reboot with
   `explsm=off`), edit, start again.
 - Its pins: only explsmd may remove them, whatever the bypass says.

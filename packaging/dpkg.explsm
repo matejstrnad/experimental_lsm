@@ -1,0 +1,26 @@
+# /etc/explsm/policy.d/dpkg.explsm: let package upgrades replace explsm's
+# own files (its binaries, unit files and bus policy, owned by explsmd) with
+# `root_bypass off`, so explsm stays loaded across an upgrade of itself.
+# Not needed with `root_bypass on` or `audit` (the default), where root gets
+# through anyway; with `audit`, without this file, the upgrade's writes are
+# logged as `bypass` lines.
+#
+# dpkg is what writes the files; apt, apt-get and unattended-upgrades run
+# it, so they need no app of their own (one would only take the @root
+# grants away from them). dpkg runs the maintainer scripts through a shell,
+# which is no app, so they stay @root: there is no `inherit` here.
+#
+# This is a grant to whatever dpkg unpacks, i.e. to every package root
+# installs (see "Resistance to root" in docs/release-plan.md). explsm's
+# prerm keeps explsm loaded across an upgrade with `root_bypass off` only if
+# `explsmctl status` shows this grant to an app named dpkg. dpkg started
+# with LD_PRELOAD (eatmydata) is no app and is refused.
+
+app dpkg {
+    exe "/usr/bin/dpkg"
+}
+
+# An upgrade unpacks file.dpkg-new next to each file, keeps the old one as a
+# hard link (file.dpkg-tmp), renames the new one over it and removes the
+# link; both replace and remove a file of explsm's.
+grant dpkg write, create, delete, rename, setattr to @explsm
