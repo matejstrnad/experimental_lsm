@@ -53,18 +53,22 @@ pub struct Status {
 /// Whether the kernel has Landlock at all (and it is not turned off), asked
 /// before anything is set up, so `require_sandbox` can refuse early.
 pub fn available() -> bool {
+    abi_version() >= 1
+}
+
+/// The kernel's Landlock ABI version, or a value below 1 without Landlock.
+fn abi_version() -> i64 {
     const LANDLOCK_CREATE_RULESET_VERSION: libc::c_uint = 1;
     // SAFETY: with this flag and no attributes the call only returns the ABI
     // version.
-    let abi = unsafe {
+    unsafe {
         libc::syscall(
             libc::SYS_landlock_create_ruleset,
             std::ptr::null::<libc::c_void>(),
             0usize,
             LANDLOCK_CREATE_RULESET_VERSION,
         )
-    };
-    abi >= 1
+    }
 }
 
 /// Restrict the daemon, all of its threads. Returns how much of it the
@@ -222,7 +226,9 @@ mod tests {
         assert!(fs::read(dir.join("policy.d/a.explsm")).is_ok());
         assert!(fs::read("/etc/passwd").is_ok());
         assert!(fs::read("/sys/devices/system/cpu/possible").is_ok());
-        assert!(denied(fs::read("/sys/kernel/security/lsm").map(drop)));
+        // Not there without securityfs (some containers).
+        let lsm = Path::new("/sys/kernel/security/lsm");
+        assert!(!lsm.exists() || denied(fs::read(lsm).map(drop)));
 
         // Labels, watches and the journal still work.
         let secret = CString::new(dir.join("other/secret").as_os_str().as_bytes()).unwrap();
@@ -247,11 +253,11 @@ mod tests {
         client.send(b"line").unwrap();
         let mut buf = [0; 8];
         assert_eq!(server.recv(&mut buf).unwrap(), 4);
-        assert!(denied(
-            UnixDatagram::unbound()
-                .unwrap()
-                .connect(dir.join("other/sock"))
-        ));
+        // Connecting to a named socket is restricted from ABI 9 on.
+        let connect = UnixDatagram::unbound()
+            .unwrap()
+            .connect(dir.join("other/sock"));
+        assert!(abi_version() < 9 || denied(connect));
 
         // Writing claims and state, nothing else.
         let appended = claims::append(&dir.join("claims.d"), "me", "a\n").unwrap();
