@@ -88,11 +88,11 @@ nobody() { setpriv --reuid=65534 --regid=65534 --clear-groups -- "$@"; }
 emark() { om=$(wc -l < "$OUT"); }
 olog() { tail -n +"$(( om + 1 ))" "$OUT"; }
 wait_out() { # pattern: wait up to 5 s for it in the event log since `emark`
-    for _ in $(seq 50); do olog | grep -qE "$1" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do olog | grep -qE "$1" && return 0; sleep 0.1; done
     return 1
 }
 wait_err() {
-    for _ in $(seq 50); do grep -qE "$1" "$ERR" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do grep -qE "$1" "$ERR" && return 0; sleep 0.1; done
     return 1
 }
 
@@ -244,7 +244,7 @@ nobody cat "$J" > /dev/null 2>&1
 rc=$?
 check "the new file is protected at once" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
 # The first `+ root` line is from the start, the second from the rescan.
-for _ in $(seq 50); do [[ $(grep -c "+ root $J " "$ERR") -ge 2 ]] && break; sleep 0.1; done
+for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do [[ $(grep -c "+ root $J " "$ERR") -ge 2 ]] && break; sleep 0.1; done
 [[ $(grep -c "+ root $J " "$ERR") -ge 2 ]]
 check "the daemon takes the new file as the root" $? "$(grep owner.json "$ERR")"
 nobody cat "$J" > /dev/null 2>&1

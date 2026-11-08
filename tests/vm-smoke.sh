@@ -15,6 +15,8 @@
 #   --no-build     test the builds in target/ as they are
 #   --any-build    don't refuse builds older than the sources (SMOKE_ANY_BUILD)
 #   --timeout SECS per test, passed to run-all.sh (default 1200)
+#   --slow N       wait N times as long for the daemon (default 2 with KVM,
+#                  10 without)
 #   --dry-run      print the vng command instead of running it
 #
 # The logs of each test end up in target/vm-smoke-logs/.
@@ -31,6 +33,7 @@ MEMORY=2G
 BUILD=1
 DRY=0
 run_args=()
+SLOW=
 
 usage() { sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit "${1:-2}"; }
 
@@ -43,6 +46,7 @@ while (($#)); do
         --any-build) run_args+=(--any-build) ;;
         --timeout) run_args+=(--timeout "${2:?--timeout needs seconds}"); shift ;;
         --dry-run) DRY=1 ;;
+        --slow) SLOW=${2:?--slow needs a number}; shift ;;
         -h | --help) usage 0 ;;
         -*) echo "unknown option $1" >&2; usage ;;
         *) run_args+=("$1") ;;
@@ -83,8 +87,9 @@ lsm=$(cat /sys/kernel/security/lsm 2> /dev/null) || lsm=
 
 vng_opts=()
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
-    :
+    : "${SLOW:=2}"
 else
+    : "${SLOW:=10}"
     echo "warning: no access to /dev/kvm; emulating the CPU (TCG), which is SLOW:" >&2
     echo "  expect the tests to take many times longer. To use KVM, enable SVM/VT-x" >&2
     echo "  in the firmware and add yourself to the kvm group." >&2
@@ -100,6 +105,11 @@ if [[ $BUILD -eq 1 ]]; then
     # target dir of its own so target/release never holds one.
     echo "== cargo build --release --features explsm-agent/test-answer (target/smoke)"
     cargo build --release --target-dir "$ROOT/target/smoke" --features explsm-agent/test-answer || exit 2
+    # Cargo leaves a binary whose crates did not change as it was; the
+    # tests take one older than any source for a stale build.
+    for b in explsmd explsmctl explsm-agent; do
+        touch "$ROOT/target/release/$b" "$ROOT/target/smoke/release/$b"
+    done
 fi
 
 # --- run ------------------------------------------------------------------------------
@@ -109,7 +119,7 @@ fi
 # reaches the host.
 logs=$ROOT/target/vm-smoke-logs
 rm -rf "$logs" && mkdir -p "$logs" || exit 2
-inner=$(printf '%q ' "$ROOT/tests/run-all.sh" --logs "$logs" "${run_args[@]}")
+inner=$(printf '%q ' "$ROOT/tests/run-all.sh" --logs "$logs" --slow "$SLOW" "${run_args[@]}")
 cmd=(vng --run "${vng_kernel[@]}" --user root --cwd "$ROOT" --rwdir "$logs"
     --cpus "$CPUS" --memory "$MEMORY" --append "lsm=$lsm"
     "${vng_opts[@]}" --exec "$inner")

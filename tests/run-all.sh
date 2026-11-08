@@ -14,6 +14,7 @@
 #   --any-build      SMOKE_ANY_BUILD=1: don't refuse builds older than the sources
 #   --timeout SECS   per test (default 1200)
 #   --logs DIR       where the logs go (default /var/tmp/explsm-run-all)
+#   --slow N         wait N times as long for the daemon (SMOKE_SLOW, default 1)
 #   --not-a-vm       run on a machine that is not a VM anyway
 #   --list           print the test names and exit
 #
@@ -39,6 +40,7 @@ while (($#)); do
         --any-build) export SMOKE_ANY_BUILD=1 ;;
         --timeout) TIMEOUT=${2:?--timeout needs seconds}; shift ;;
         --logs) LOGS=${2:?--logs needs a directory}; shift ;;
+        --slow) export SMOKE_SLOW=${2:?--slow needs a number}; shift ;;
         --not-a-vm) NOT_A_VM=1 ;;
         --list) printf '%s\n' "${ALL[@]}"; exit 0 ;;
         -h | --help) usage 0 ;;

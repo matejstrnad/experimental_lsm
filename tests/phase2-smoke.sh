@@ -97,7 +97,7 @@ start() { # extra explsmd args
     : > "$OUT"; : > "$ERR"
     "$EXPLSMD" --policy "$POLICY" --no-dbus --no-pin --no-self-protect "$@" > "$OUT" 2> "$ERR" &
     daemon=$!
-    for _ in $(seq 100); do grep -q attached "$ERR" && return; sleep 0.1; done
+    for _ in $(seq $((100 * ${SMOKE_SLOW:-1}))); do grep -q attached "$ERR" && return; sleep 0.1; done
     echo "explsmd did not start:"; cat "$ERR"; kill "$daemon" 2>/dev/null; exit 1
 }
 stop() {

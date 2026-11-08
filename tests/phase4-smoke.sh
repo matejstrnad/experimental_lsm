@@ -94,7 +94,7 @@ nobody() { setpriv --reuid=65534 --regid=65534 --clear-groups -- "$@"; }
 emark() { em=$(wc -l < "$ERR"); }
 elog() { tail -n +"$(( em + 1 ))" "$ERR"; }
 wait_log() { # pattern: wait up to 5 s for it in the daemon log since `emark`
-    for _ in $(seq 50); do elog | grep -qE "$1" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do elog | grep -qE "$1" && return 0; sleep 0.1; done
     return 1
 }
 # cat that stays a moment after a denial, so the daemon finds its exe in
@@ -115,7 +115,7 @@ start_agent() { # user answer
         "$AB/explsm-agent" --answer "$2" > "$agent" 2>&1 &
     fi
     agent_pid=$!
-    for _ in $(seq 50); do grep -q "registered with explsmd" "$agent" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do grep -q "registered with explsmd" "$agent" && return 0; sleep 0.1; done
     echo "agent did not register:"; cat "$agent"; return 1
 }
 stop_agent() {
@@ -208,7 +208,7 @@ check "the written grants survive a reload" $? "$(elog)"
 start_agent nobody force:allow-always
 emark
 read_secret nobody "$UB/5/cat"
-for _ in $(seq 50); do grep -q "is not an answer to this prompt" "$agent" && break; sleep 0.1; done
+for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do grep -q "is not an answer to this prompt" "$agent" && break; sleep 0.1; done
 grep -q "is not an answer to this prompt" "$agent"
 r=$?
 ! grep -qs "$UB/[56]/cat" "$CD/nobody.explsm"

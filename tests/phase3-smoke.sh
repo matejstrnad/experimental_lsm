@@ -72,7 +72,7 @@ getlabel() { python3 -c "import os,sys; print(os.getxattr(sys.argv[1], 'security
 emark() { em=$(wc -l < "$ERR"); }
 elog() { tail -n +"$(( em + 1 ))" "$ERR"; }
 wait_log() { # pattern: wait up to 5 s for it in the daemon log since `emark`
-    for _ in $(seq 50); do elog | grep -qE "$1" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do elog | grep -qE "$1" && return 0; sleep 0.1; done
     return 1
 }
 
@@ -234,7 +234,7 @@ app auditee {
 EOF
     unit=explsm-smoke-$$
     systemd-run --quiet --collect --unit "$unit" "$EXPLSMD" --policy "$DIR/audit.d" --no-dbus --no-seed --no-pin --no-self-protect
-    for _ in $(seq 50); do
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do
         journalctl -q -u "$unit" -o cat | grep -q attached && break
         sleep 0.1
     done

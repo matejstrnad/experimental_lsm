@@ -96,7 +96,7 @@ check() { # name, condition result (0 = pass), detail
 denied() { [[ $1 -ne 0 ]]; echo $?; }
 nobody() { setpriv --reuid=65534 --regid=65534 --clear-groups -- "$@"; }
 wait_err() {
-    for _ in $(seq 50); do grep -qE "$1" "$ERR" && return 0; sleep 0.1; done
+    for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do grep -qE "$1" "$ERR" && return 0; sleep 0.1; done
     return 1
 }
 
