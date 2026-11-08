@@ -8,7 +8,7 @@ use std::{
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
     MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_ROOT, SUBJECT_TERMINAL,
-    app_flag, perm,
+    app_flag, perm, root_bypass,
 };
 
 use crate::{
@@ -55,6 +55,37 @@ impl Mode {
         match self {
             Self::Audit => MODE_AUDIT,
             Self::Enforce => MODE_ENFORCE,
+        }
+    }
+}
+
+/// `root_bypass on|off|audit`: what a task with fsuid 0 gets past.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RootBypass {
+    /// Every check except label changes and `EXDEV`, silently.
+    On,
+    /// None: root is the `@root` subject.
+    Off,
+    /// As `On`, and every access only the bypass let through is logged.
+    #[default]
+    Audit,
+}
+
+impl RootBypass {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+            Self::Audit => "audit",
+        }
+    }
+
+    /// Value of `CONFIG[CFG_ROOT_BYPASS]`.
+    pub fn config_value(self) -> u32 {
+        match self {
+            Self::On => root_bypass::ON,
+            Self::Off => root_bypass::OFF,
+            Self::Audit => root_bypass::AUDIT,
         }
     }
 }
@@ -289,7 +320,7 @@ fn check_env(var: &Spanned<String>) -> Result<(), Diagnostic> {
 /// A checked policy.
 #[derive(Clone, Debug)]
 pub struct Compiled {
-    pub root_bypass: bool,
+    pub root_bypass: RootBypass,
     /// `fail_closed on`: logins wait for explsmd at boot (see
     /// `packaging/explsm-gate.service`).
     pub fail_closed: bool,
@@ -392,7 +423,7 @@ fn perm_bits(p: &Spanned<String>) -> Result<u32, Diagnostic> {
 pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diagnostic>> {
     let mut diags = Vec::new();
     let mut ids = ids.clone();
-    let mut root_bypass: Option<&Spanned<bool>> = None;
+    let mut root_bypass: Option<&Spanned<RootBypass>> = None;
     let mut fail_closed: Option<&Spanned<bool>> = None;
     let mut require_sandbox: Option<&Spanned<bool>> = None;
     let mut require_dbus: Option<&Spanned<bool>> = None;
@@ -579,7 +610,7 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         return Err(diags);
     }
     Ok(Compiled {
-        root_bypass: root_bypass.is_none_or(|v| v.value),
+        root_bypass: root_bypass.map_or(RootBypass::default(), |v| v.value),
         fail_closed: fail_closed.is_some_and(|v| v.value),
         require_sandbox: require_sandbox.is_some_and(|v| v.value),
         require_dbus: require_dbus.is_some_and(|v| v.value),
@@ -739,7 +770,7 @@ mod tests {
             grant @unconfined all to *
             "#,
         );
-        assert!(!c.root_bypass);
+        assert_eq!(c.root_bypass, RootBypass::Off);
         assert!(!c.fail_closed);
         assert!(!c.require_sandbox);
         assert!(!c.require_dbus);
@@ -772,7 +803,9 @@ mod tests {
     #[test]
     fn defaults() {
         let c = compiled("");
-        assert!(c.root_bypass);
+        assert_eq!(c.root_bypass, RootBypass::Audit);
+        assert_eq!(c.root_bypass.config_value(), root_bypass::AUDIT);
+        assert_eq!(compiled("root_bypass on").root_bypass, RootBypass::On);
         assert!(c.users.is_none());
     }
 

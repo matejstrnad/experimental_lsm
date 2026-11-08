@@ -33,8 +33,8 @@ replacement. See [threat-model.md](threat-model.md) for the details.
 
 Not protected:
 
-- **Against root.** `root_bypass on` is the default, so anything that gets
-  sudo gets everything. With `root_bypass off` the casual routes fail, but
+- **Against root.** `root_bypass audit` is the default, so anything that
+  gets sudo gets everything (it is only logged). With `root_bypass off` the casual routes fail, but
   root can still bind-mount another binary over `/usr/sbin/explsmd` in a
   mount namespace and be the daemon, or load a kernel module. Root is out of
   scope.

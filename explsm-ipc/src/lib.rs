@@ -50,7 +50,8 @@ pub struct Status {
     pub loaded_at: u64,
     /// Unix time of the last resolution of paths to inodes.
     pub resolved_at: u64,
-    pub root_bypass: bool,
+    /// `on`, `off` or `audit`, after `explsmd --no-root-bypass`.
+    pub root_bypass: String,
     pub generation: u32,
     /// Users whose homes `~` is expanded for.
     pub users: Vec<String>,

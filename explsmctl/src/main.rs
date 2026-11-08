@@ -59,17 +59,21 @@ enum Cmd {
     /// Show the policy in force, agents, grants from prompts and the
     /// counters.
     Status,
-    /// Show denied and audited accesses.
+    /// Show denied, audited and bypassed accesses.
     Log {
         /// Only accesses to data of this app.
         #[arg(long)]
         app: Option<String>,
         /// Only denied accesses.
-        #[arg(long, conflicts_with = "audit")]
+        #[arg(long, conflicts_with_all = ["audit", "bypass"])]
         deny: bool,
         /// Only audited accesses.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "bypass")]
         audit: bool,
+        /// Only accesses that only the root bypass let through
+        /// (`root_bypass audit`).
+        #[arg(long)]
+        bypass: bool,
         /// Passed to journalctl, e.g. "1 hour ago" or "today".
         #[arg(long)]
         since: Option<String>,
@@ -105,10 +109,11 @@ fn main() -> ExitCode {
             app,
             deny,
             audit,
+            bypass,
             since,
             follow,
             lines,
-        } => log(app, deny, audit, since, follow, lines),
+        } => log(app, deny, audit, bypass, since, follow, lines),
         Cmd::Learn { app, since } => learn(&app, since),
     };
     match result {
@@ -153,7 +158,7 @@ fn check(
         sources.0.len(),
         policy.apps.len(),
         policy.grants.len(),
-        if policy.root_bypass { "on" } else { "off" },
+        policy.root_bypass.name(),
         if policy.fail_closed { ", fail closed" } else { "" }
     );
     if !resolve {
@@ -307,7 +312,7 @@ async fn status() -> Result<ExitCode> {
     );
     println!(
         "root bypass {}, policy generation {}",
-        if s.root_bypass { "on" } else { "off" },
+        s.root_bypass,
         s.generation
     );
     println!("users       {}", s.users.join(", "));
@@ -386,6 +391,7 @@ fn log(
     app: Option<String>,
     deny: bool,
     audit: bool,
+    bypass: bool,
     since: Option<String>,
     follow: bool,
     lines: Option<u32>,
@@ -397,6 +403,9 @@ fn log(
     }
     if audit {
         cmd.arg("EXPLSM_ACTION=audit");
+    }
+    if bypass {
+        cmd.arg("EXPLSM_ACTION=bypass");
     }
     if follow {
         cmd.arg("--follow");

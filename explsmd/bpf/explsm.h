@@ -56,6 +56,11 @@ typedef u32 app_id;
 
 #define CFG_GENERATION 0
 #define CFG_ROOT_BYPASS 1
+/* Values of CONFIG[CFG_ROOT_BYPASS]. With BYPASS_AUDIT root keeps its
+ * access, and every access only the bypass let through is reported. */
+#define BYPASS_OFF 0
+#define BYPASS_ON 1
+#define BYPASS_AUDIT 2
 #define CFG_DAEMON_TGID 2
 #define CFG_LAYOUT 3
 #define CFG_LOG_EXECS 4
@@ -74,6 +79,7 @@ enum stat {
 	STAT_DROPPED,
 	STAT_ENV_DROPPED,
 	STAT_TAMPER,
+	STAT_BYPASSED,
 	STATS_LEN,
 };
 
@@ -108,6 +114,8 @@ enum op {
 
 #define ACTION_AUDIT 0
 #define ACTION_DENY 1
+/* Let through by the root bypass in audit mode only. */
+#define ACTION_BYPASS 2
 
 #define REASON_PERMS 0
 #define REASON_CROSS 1

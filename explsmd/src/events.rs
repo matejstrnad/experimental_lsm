@@ -8,6 +8,7 @@
 //! deny   pid=… … subject=unconfined owner=ssh removexattr need=label /home/me/.ssh
 //! deny   pid=… … subject=unconfined(terminal) owner=ssh open(r) need=read /home/me/.ssh/config
 //! deny   pid=… … subject=root owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
+//! bypass pid=… … subject=root owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
 //! claim  pid=… … app=claude path=/home/me/.claude
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=LD_PRELOAD
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=userns
@@ -20,14 +21,17 @@
 //! ```
 //!
 //! `exec` lines are only written with `explsmd --log-execs`. `deny` lines
-//! were refused, `audit` lines would have been in enforce mode.
+//! were refused, `audit` lines would have been in enforce mode, `bypass`
+//! lines were let through only by the root bypass in audit mode (the
+//! default `root_bypass audit`): with `root_bypass off` they would be
+//! `deny` (or `audit`) lines.
 //! Under systemd the same information also goes to the journal as `EXPLSM_*`
 //! fields (see `journal.rs`), which `explsmctl log` and `learn` query.
 
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
-    ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
+    ACTION_BYPASS, ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
     REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT, TF_TERMINAL, env_var, own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
@@ -292,7 +296,11 @@ pub fn render(
     }
 
     let deny = ev.action == ACTION_DENY;
-    let verb = if deny { "deny  " } else { "audit " };
+    let verb = match ev.action {
+        ACTION_DENY => "deny  ",
+        ACTION_BYPASS => "bypass",
+        _ => "audit ",
+    };
     let op = Op::from_u32(ev.op);
     let op_name = op.map_or("?", Op::name);
     let mode = match op {
@@ -472,6 +480,12 @@ mod tests {
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
         assert!(line.text.contains(" subject=root(terminal) "), "{}", line.text);
         assert!(line.fields.contains(&("EXPLSM_SUBJECT", "root".into())));
+        ev.action = ACTION_BYPASS;
+        let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
+        assert!(line.text.starts_with("bypass pid=7 "), "{}", line.text);
+        assert!(line.fields.contains(&("EXPLSM_ACTION", "bypass".into())));
+        assert_eq!(line.priority, 5);
+        ev.action = ACTION_AUDIT;
         // A root process of an app is the app.
         ev.subject = 2;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());

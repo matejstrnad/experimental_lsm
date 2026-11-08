@@ -29,7 +29,7 @@ pub mod users;
 
 use std::{fs, io, path::Path};
 
-pub use compile::{App, Compiled, IdTable, Mode, PathPat, compile, env_paths};
+pub use compile::{App, Compiled, IdTable, Mode, PathPat, RootBypass, compile, env_paths};
 pub use diag::{Diagnostic, Severity};
 pub use parser::parse;
 

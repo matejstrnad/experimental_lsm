@@ -11,14 +11,18 @@
  *   storage cache, then a bounded d_parent walk to a root in ROOTS) and check
  *   the subject against it.
  *
- * Decision: the owner may do anything; otherwise, with @root bypass on, a
- * task with fsuid 0 may too; otherwise the perms must be in
+ * Decision: the owner may do anything; otherwise the perms must be in
  * GRANTS[(subject, owner)] | GRANTS[(subject, *)], plus the @root grants for
  * an unconfined task with fsuid 0, plus the @terminal grants for an
  * unconfined task with TF_TERMINAL and a controlling tty, plus what the
  * user allowed through a prompt (TEMP_GRANTS). A missing perm is reported, and
  * denied with EACCES if the owner is in enforce mode. The daemon may list
  * everything, to find hard links in the trees.
+ *
+ * The root bypass (CFG_ROOT_BYPASS) lets a task with fsuid 0 through where
+ * perms are missing: silently with BYPASS_ON, reported as ACTION_BYPASS with
+ * BYPASS_AUDIT (the default), so a policy for root can be learnt before the
+ * bypass is turned off.
  *
  * An app creating a folder right in one of CLAIM_PARENTS (~, ~/.config, …) is
  * reported, so the user can be asked whether the app should own it.
@@ -45,7 +49,7 @@
  * - ptrace and everything that goes through ptrace_may_access (/proc/<pid>/
  *   mem, environ, fd/, ns/, process_vm_*, pidfd_getfd, setns on a pidfd and
  *   the pidfd namespace ioctls) on an app's task is only
- *   for the same app, the daemon, and root with the bypass on. So are the
+ *   for the same app, the daemon, and root with the bypass. So are the
  *   signals that dump core and changes to its resource limits (which can
  *   make it dump core): the dump would hold its memory.
  * - Nothing but the app may add entries to the directory of a user-writable
@@ -358,6 +362,33 @@ static __always_inline u32 current_tgid(void)
 	return bpf_get_current_pid_tgid() >> 32;
 }
 
+/* The root bypass for a task with fsuid: BYPASS_OFF unless it is 0. */
+static __always_inline u32 bypass(u32 fsuid)
+{
+	if (fsuid != 0)
+		return BYPASS_OFF;
+	u32 b = config(CFG_ROOT_BYPASS);
+	if (b == BYPASS_AUDIT)
+		return BYPASS_AUDIT;
+	return b ? BYPASS_ON : BYPASS_OFF;
+}
+
+/* Set in what missing() returns: perms are missing, but the root bypass in
+ * audit mode lets them through. Above every PERM_* bit. */
+#define LACK_BYPASS (1u << 31)
+
+/* What missing() returns for the perms the current task lacks, after the
+ * root bypass. */
+static __always_inline u32 unless_bypass(u32 lacking)
+{
+	if (!lacking)
+		return 0;
+	u32 b = bypass(current_fsuid());
+	if (b == BYPASS_AUDIT)
+		return lacking | LACK_BYPASS;
+	return b == BYPASS_ON ? 0 : lacking;
+}
+
 /* Invalidate every cached owner. Not atomic: two racing bumps may both store
  * the same value, which still differs from every cached one. */
 static __always_inline void bump_generation(void)
@@ -518,7 +549,8 @@ static __always_inline u32 temp_granted(app_id subject, app_id owner)
 	return (proc ? *proc : 0) | (session ? *session : 0);
 }
 
-/* Perms in perms that subject lacks on data of owner; 0 if allowed. */
+/* Perms in perms that subject lacks on data of owner; 0 if allowed. With
+ * LACK_BYPASS set, the root bypass in audit mode allows them. */
 static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 {
 	/* An app exe: its contents are no secret. */
@@ -539,18 +571,15 @@ static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 	}
 	bump(STAT_FOREIGN);
 	/* explsm's own files: anyone may read them, only the daemon may change
-	 * them; root too while bypass is on, except for the pins. No grants. */
+	 * them; root too with the bypass, except for the pins. No grants. */
 	if (owner == APP_DAEMON || owner == OWNER_PINS) {
 		perms &= ~(PERM_READ | PERM_LIST);
 		if (!perms || subject == APP_DAEMON)
 			return 0;
-		if (owner == APP_DAEMON && config(CFG_ROOT_BYPASS) &&
-		    current_fsuid() == 0)
-			return 0;
-		return perms;
+		if (owner == OWNER_PINS)
+			return perms;
+		return unless_bypass(perms);
 	}
-	if (config(CFG_ROOT_BYPASS) && current_fsuid() == 0)
-		return 0;
 	u32 lacking = perms & ~granted(subject, owner);
 	if (!lacking)
 		return 0;
@@ -567,7 +596,27 @@ static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 		if (!lacking)
 			return 0;
 	}
-	return lacking & ~temp_granted(subject, owner);
+	return unless_bypass(lacking & ~temp_granted(subject, owner));
+}
+
+/* What becomes of an operation that lacks perms (from missing()) on data
+ * of owner. */
+static __always_inline u32 action_for(app_id owner, u32 lacking)
+{
+	if (lacking & LACK_BYPASS)
+		return ACTION_BYPASS;
+	return enforcing(owner) ? ACTION_DENY : ACTION_AUDIT;
+}
+
+/* Count a reported operation and return the hook result: err if denied. */
+static __always_inline int outcome(u32 action, int err)
+{
+	if (action == ACTION_DENY) {
+		bump(STAT_DENIED);
+		return err;
+	}
+	bump(action == ACTION_BYPASS ? STAT_BYPASSED : STAT_AUDITED);
+	return 0;
 }
 
 /* Reserve an event with the fields every event has. Paths are left to the
@@ -641,12 +690,12 @@ static __always_inline int refuse(u32 op, app_id subject, app_id owner,
 				  u32 lacking, u32 flags, struct dentry *d,
 				  struct dentry *d2)
 {
-	int deny = enforcing(owner);
+	u32 action = action_for(owner, lacking);
 	struct event *ev = new_event(EV_ACCESS, subject, owner);
 	if (ev) {
 		ev->op = op;
-		ev->perms = lacking;
-		ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+		ev->perms = lacking & ~LACK_BYPASS;
+		ev->action = action;
 		ev->flags = flags;
 		ev->file = dentry_key(d);
 		name_chain(&ev->path, d);
@@ -654,12 +703,7 @@ static __always_inline int refuse(u32 op, app_id subject, app_id owner,
 			name_chain(&ev->path2, d2);
 		bpf_ringbuf_submit(ev, 0);
 	}
-	if (deny) {
-		bump(STAT_DENIED);
-		return -EACCES;
-	}
-	bump(STAT_AUDITED);
-	return 0;
+	return outcome(action, -EACCES);
 }
 
 /* Check perms on the object at d, whose owner is owner. */
@@ -701,18 +745,19 @@ static __always_inline int cross(u32 op, app_id from, app_id to,
 }
 
 /* Report tampering of subject with owner's process or exe and return the
- * hook result: denied if owner is enforced. d may be NULL. Ptrace probes of
- * ps and the like (PTRACE_MODE_NOAUDIT) are not reported. */
+ * hook result: denied if owner is enforced, unless bypassed (only the root
+ * bypass in audit mode lets it). d may be NULL. Ptrace probes of ps and the
+ * like (PTRACE_MODE_NOAUDIT) are not reported. */
 static __always_inline int tamper(u32 op, app_id subject, app_id owner,
 				  u32 flags, u32 target, struct dentry *d,
-				  int report)
+				  int report, int bypassed)
 {
-	int deny = enforcing(owner);
+	int deny = !bypassed && enforcing(owner);
 	struct event *ev = report ? new_event(EV_ACCESS, subject, owner) : NULL;
 	if (ev) {
 		ev->owner2 = target;
 		ev->op = op;
-		ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+		ev->action = bypassed ? ACTION_BYPASS : deny ? ACTION_DENY : ACTION_AUDIT;
 		ev->reason = REASON_TAMPER;
 		ev->flags = flags;
 		if (d) {
@@ -724,6 +769,8 @@ static __always_inline int tamper(u32 op, app_id subject, app_id owner,
 	bump(STAT_TAMPER);
 	if (deny)
 		return -EPERM;
+	if (bypassed)
+		bump(STAT_BYPASSED);
 	return 0;
 }
 
@@ -736,9 +783,10 @@ static __always_inline int exe_guard(app_id *app, struct dentry *d)
 	app_id subject = current_app();
 	if (subject == *app || subject == APP_DAEMON)
 		return 0;
-	if (config(CFG_ROOT_BYPASS) && current_fsuid() == 0)
+	u32 b = bypass(current_fsuid());
+	if (b == BYPASS_ON)
 		return 0;
-	return tamper(OP_EXE_DIR, subject, *app, 0, 0, d, 1);
+	return tamper(OP_EXE_DIR, subject, *app, 0, 0, d, 1, b == BYPASS_AUDIT);
 }
 
 /* Adding the entry d to dir. If dir holds a user-writable app exe, only
@@ -1014,24 +1062,19 @@ int LSM_PROG(file_open, struct file *file, int retval)
 	if (!lacking)
 		return 0;
 
-	int deny = enforcing(owner);
+	u32 action = action_for(owner, lacking);
 	struct event *ev = new_event(EV_ACCESS, subject, owner);
 	if (ev) {
 		ev->op = OP_OPEN;
-		ev->perms = lacking;
-		ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+		ev->perms = lacking & ~LACK_BYPASS;
+		ev->action = action;
 		ev->flags = flags;
 		ev->file = file_key(ino);
 		ev->path.kind = PATH_FULL;
 		ev->path.len = bpf_d_path(&file->f_path, ev->path.buf, PATH_LEN);
 		bpf_ringbuf_submit(ev, 0);
 	}
-	if (deny) {
-		bump(STAT_DENIED);
-		return -EACCES;
-	}
-	bump(STAT_AUDITED);
-	return 0;
+	return outcome(action, -EACCES);
 }
 
 /* Creating d in directory dir. */
@@ -1312,12 +1355,21 @@ int LSM_PROG(inode_remove_acl, struct mnt_idmap *idmap, struct dentry *d, const 
 #define PTRACE_MODE_NOAUDIT 0x04
 #define BPF_LINK_GET_FD_BY_ID 30
 
-/* Whether subject may ptrace (or read the memory of) a task of target. */
+#define MAY_NOT 0
+#define MAY 1
+/* Only the root bypass in audit mode lets it, and it is reported. */
+#define MAY_BYPASS 2
+
+/* Whether subject, with fsuid, may ptrace (or read the memory of) a task of
+ * target: MAY, MAY_NOT or MAY_BYPASS. */
 static __always_inline int may_tamper(app_id subject, app_id target, u32 fsuid)
 {
 	if (target == APP_UNCONFINED || subject == target || subject == APP_DAEMON)
-		return 1;
-	return config(CFG_ROOT_BYPASS) && fsuid == 0;
+		return MAY;
+	u32 b = bypass(fsuid);
+	if (b == BYPASS_AUDIT)
+		return MAY_BYPASS;
+	return b == BYPASS_ON ? MAY : MAY_NOT;
 }
 
 static __always_inline app_id app_of(struct task_struct *task)
@@ -1337,10 +1389,11 @@ int LSM_PROG(ptrace_access_check, struct task_struct *child, u32 mode, int retva
 		return retval;
 	app_id target = app_of(child);
 	app_id subject = current_app();
-	if (may_tamper(subject, target, current_fsuid()))
+	int may = may_tamper(subject, target, current_fsuid());
+	if (may == MAY)
 		return 0;
 	return tamper(OP_PTRACE, subject, target, mode, child->tgid, NULL,
-		      !(mode & PTRACE_MODE_NOAUDIT));
+		      !(mode & PTRACE_MODE_NOAUDIT), may == MAY_BYPASS);
 }
 
 /* The current task asks parent to trace it. */
@@ -1351,9 +1404,11 @@ int LSM_PROG(ptrace_traceme, struct task_struct *parent, int retval)
 		return retval;
 	app_id target = current_app();
 	app_id tracer = app_of(parent);
-	if (may_tamper(tracer, target, parent->cred->fsuid.val))
+	int may = may_tamper(tracer, target, parent->cred->fsuid.val);
+	if (may == MAY)
 		return 0;
-	return tamper(OP_TRACEME, tracer, target, 0, parent->tgid, NULL, 1);
+	return tamper(OP_TRACEME, tracer, target, 0, parent->tgid, NULL, 1,
+		      may == MAY_BYPASS);
 }
 
 #define SIGQUIT 3
@@ -1399,9 +1454,10 @@ int LSM_PROG(task_kill, struct task_struct *p, struct kernel_siginfo *info, int 
 		return 0;
 	app_id target = app_of(p);
 	app_id subject = current_app();
-	if (may_tamper(subject, target, current_fsuid()))
+	int may = may_tamper(subject, target, current_fsuid());
+	if (may == MAY)
 		return 0;
-	return tamper(OP_SIGNAL, subject, target, sig, p->tgid, NULL, 1);
+	return tamper(OP_SIGNAL, subject, target, sig, p->tgid, NULL, 1, may == MAY_BYPASS);
 }
 
 /* A low RLIMIT_CPU or RLIMIT_FSIZE makes the kernel send the app a signal
@@ -1414,9 +1470,10 @@ int LSM_PROG(task_setrlimit, struct task_struct *p, u32 resource, struct rlimit 
 		return retval;
 	app_id target = app_of(p);
 	app_id subject = current_app();
-	if (may_tamper(subject, target, current_fsuid()))
+	int may = may_tamper(subject, target, current_fsuid());
+	if (may == MAY)
 		return 0;
-	return tamper(OP_RLIMIT, subject, target, resource, p->tgid, NULL, 1);
+	return tamper(OP_RLIMIT, subject, target, resource, p->tgid, NULL, 1, may == MAY_BYPASS);
 }
 
 /* A file descriptor for one of explsm's own BPF objects: only the daemon. */

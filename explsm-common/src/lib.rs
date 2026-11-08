@@ -199,8 +199,20 @@ pub struct EnvKey {
 
 /// Indexes into the `CONFIG` array map.
 pub const CFG_GENERATION: u32 = 0;
-/// Non-zero: tasks with fsuid 0 bypass every check except the label.
+/// One of [`root_bypass`]: whether tasks with fsuid 0 get through every
+/// check except the label and `EXDEV`.
 pub const CFG_ROOT_BYPASS: u32 = 1;
+
+/// Values of `CONFIG[CFG_ROOT_BYPASS]`.
+pub mod root_bypass {
+    /// Root is checked like any other subject (`@root`).
+    pub const OFF: u32 = 0;
+    /// Root gets through, silently.
+    pub const ON: u32 = 1;
+    /// Root gets through, and every access only the bypass let through is
+    /// reported with [`ACTION_BYPASS`](super::ACTION_BYPASS).
+    pub const AUDIT: u32 = 2;
+}
 /// Thread group id of the daemon, the only process that may write the label.
 pub const CFG_DAEMON_TGID: u32 = 2;
 /// Layout version of the pinned maps, so a daemon of another build refuses
@@ -248,9 +260,11 @@ pub enum Stat {
     /// ptrace-like accesses to an app process, core-dumping signals and
     /// resource limit changes from other subjects (denied in enforce mode).
     Tamper = 11,
+    /// Operations only the root bypass in audit mode let through.
+    Bypassed = 12,
 }
 
-pub const STATS_LEN: u32 = 12;
+pub const STATS_LEN: u32 = 13;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,6 +376,10 @@ impl Op {
 /// [`Event::action`]: what happened to the operation.
 pub const ACTION_AUDIT: u32 = 0;
 pub const ACTION_DENY: u32 = 1;
+/// Allowed only because of the root bypass in audit mode
+/// ([`root_bypass::AUDIT`]): with the bypass off it would have been denied
+/// (or audited, in an audit-mode owner).
+pub const ACTION_BYPASS: u32 = 2;
 
 /// [`Event::reason`]: why the operation was reported.
 /// The subject lacks `perms` on data of `owner`.

@@ -138,7 +138,8 @@ Lets `SUBJECT` access the data of `OWNER`. Grants for the same pair add up.
   [`terminal`](#terminal-path-)). A root process of an app (a daemon named
   by `exe`) has its app's grants only. `@root` grants matter where the
   root bypass does not let root through anyway (see
-  [`root_bypass`](#root_bypass-onoff)).
+  [`root_bypass`](#root_bypass-onoffaudit)); with `root_bypass audit`, what
+  they cover is no longer logged as a `bypass`.
 - **PERMS**: comma-separated, from `read`, `write`, `create`, `delete`,
   `rename`, `list` (read a directory), `setattr` (mode, owner, times,
   xattrs, ACLs), or `all`. Truncation counts as `write`.
@@ -178,10 +179,24 @@ the policy keeps its running processes trusted until they exit.
 More roots of an app defined elsewhere. The daemon writes these for
 auto-claims; they can be written by hand too.
 
-### `root_bypass on|off`
+### `root_bypass on|off|audit`
 
-`on` (the default): processes with fsuid 0 bypass every check except label
-changes and `EXDEV`. `explsmd --no-root-bypass` turns it off regardless.
+What a process with fsuid 0 gets past. Label changes and `EXDEV` are never
+bypassed, nor the pin directory.
+
+- `audit` (the default): root gets through every other check, and every
+  access that only the bypass let through is logged as a `bypass` line
+  (`EXPLSM_ACTION=bypass`), with what it would have needed. Run like this
+  for a while, then turn the log into grants with `explsmctl learn @root`
+  and switch to `off`.
+- `on`: the same, silently (the default before audit mode).
+- `off`: root is checked like any other process: a root process that is no
+  app is `@root` and has the `@root` and `@unconfined` grants (and
+  `@terminal` ones on a terminal), a root process of an app has its app's.
+  It can't change explsm's own files either, nor ptrace or core-dump an
+  app's processes.
+
+`explsmd --no-root-bypass` turns it off regardless.
 
 ### `fail_closed on|off`
 

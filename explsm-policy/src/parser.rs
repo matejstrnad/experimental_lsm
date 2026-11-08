@@ -4,6 +4,7 @@
 use crate::{
     Sources, Span, Spanned,
     ast::{App, Claim, Exe, Grant, Item, Policy},
+    compile::RootBypass,
     diag::{Diagnostic, Severity},
     lexer::{Tok, lex},
 };
@@ -134,6 +135,24 @@ impl Parser {
         })
     }
 
+    fn root_bypass(&mut self) -> PResult<Spanned<RootBypass>> {
+        const EXPECTED: &str = "`on`, `off` or `audit`";
+        let v = self.word(EXPECTED)?;
+        let value = match v.value.as_str() {
+            "on" => RootBypass::On,
+            "off" => RootBypass::Off,
+            "audit" => RootBypass::Audit,
+            _ => {
+                self.pos -= 1;
+                return Err(self.unexpected(EXPECTED));
+            }
+        };
+        Ok(Spanned {
+            value,
+            span: v.span,
+        })
+    }
+
     fn string(&mut self, expected: &str) -> PResult<Spanned<String>> {
         match self.peek() {
             Some(Tok::Str(s)) => {
@@ -203,7 +222,7 @@ impl Parser {
                 let paths = self.list(|p| p.string("a path"))?;
                 Ok(Item::Claim(Claim { app, paths }))
             }
-            "root_bypass" => self.on_off().map(Item::RootBypass),
+            "root_bypass" => self.root_bypass().map(Item::RootBypass),
             "fail_closed" => self.on_off().map(Item::FailClosed),
             "require_sandbox" => self.on_off().map(Item::RequireSandbox),
             "require_dbus" => self.on_off().map(Item::RequireDbus),
@@ -371,6 +390,8 @@ mod tests {
             claim claude "/home/me/.claude-extra"
         "#);
         assert_eq!(p.items.len(), 7);
+        let Item::RootBypass(b) = &p.items[0] else { panic!() };
+        assert_eq!(b.value, RootBypass::Off);
         let Item::Terminal(t) = &p.items[5] else { panic!() };
         assert_eq!(t.len(), 2);
         let Item::Claim(c) = &p.items[6] else { panic!() };
@@ -398,6 +419,19 @@ mod tests {
     }
 
     #[test]
+    fn root_bypass_modes() {
+        for (text, want) in [
+            ("on", RootBypass::On),
+            ("off", RootBypass::Off),
+            ("audit", RootBypass::Audit),
+        ] {
+            let p = ok(&format!("root_bypass {text}"));
+            let Item::RootBypass(b) = &p.items[0] else { panic!() };
+            assert_eq!(b.value, want);
+        }
+    }
+
+    #[test]
     fn reports_every_broken_statement() {
         let e = errors(
             r#"
@@ -416,7 +450,7 @@ mod tests {
                  `require_sandbox`, `require_dbus` or `users`, found `bogus`",
                 "expected `exe`, `owns`, `mode`, `inherit`, `env` or `}`, found `frobnicate`",
                 "grant without permissions",
-                "expected `on` or `off`, found `maybe`",
+                "expected `on`, `off` or `audit`, found `maybe`",
                 "expected `,` or `to`, found `b`",
                 "app b is missing its `}`",
             ]

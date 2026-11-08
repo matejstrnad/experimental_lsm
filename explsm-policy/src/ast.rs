@@ -1,6 +1,6 @@
 //! Syntax tree, as written. Names and paths are not checked yet.
 
-use crate::{Span, Spanned};
+use crate::{Span, Spanned, compile::RootBypass};
 
 #[derive(Debug, Default)]
 pub struct Policy {
@@ -12,8 +12,8 @@ pub struct Policy {
 
 #[derive(Debug)]
 pub enum Item {
-    /// `root_bypass on|off`
-    RootBypass(Spanned<bool>),
+    /// `root_bypass on|off|audit`
+    RootBypass(Spanned<RootBypass>),
     /// `fail_closed on|off`
     FailClosed(Spanned<bool>),
     /// `require_sandbox on|off`

@@ -268,12 +268,21 @@ check "data renamed out in audit mode is no longer owned (cache flushed)" $? "rc
 run /usr/bin/cat "$E/secret"
 [[ $rc -eq 0 ]] && quiet
 check "root bypass lets root read" $? "rc=$rc $ev"
+has "^bypass .*uid=0 .*subject=root owner=owner open\(r\) need=read $E/secret\$"
+check "… and in audit mode (the default) logs it as a bypass" $? "$ev"
 
 run nobody /usr/bin/cat "$O/file"
 [[ $rc -eq 0 ]] && quiet
 check "unprotected files are not reported" $? "rc=$rc $ev"
 
 stop
+echo "root_bypass on" >> "$POLICY"
+start --no-seed
+run /usr/bin/cat "$E/secret"
+[[ $rc -eq 0 ]] && ! grep -qE "^(deny|audit|bypass) " <<< "$ev"
+check "root_bypass on lets root read silently" $? "rc=$rc $ev"
+stop
+
 start --no-root-bypass --no-seed
 run /usr/bin/cat "$E/secret"
 denied && has "^deny .*uid=0 .*need=read $E/secret\$"

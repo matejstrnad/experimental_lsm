@@ -139,7 +139,18 @@ deny   pid=4244 tid=4244 uid=1000 proc=mv comm=mv subject=ssh owner=ssh->unconfi
 ```
 
 `deny` lines were refused (`EACCES`), `audit` lines would have been refused
-in enforce mode.
+in enforce mode, `bypass` lines (`explsmctl log --bypass`) were let through
+only because the process had fsuid 0 and the root bypass is in audit mode
+(see below).
+
+> [!NOTE]
+> **Release note: `root_bypass audit` is the new default.** Root keeps the
+> access it had with `root_bypass on`, but every access only the bypass let
+> through is now logged as a `bypass` line with `subject=root` (or the app,
+> for a root process of an app). Set `root_bypass on` to keep the old,
+> silent behaviour. To make root a subject like any other, run in audit
+> mode for a while, add the suggestions of `explsmctl learn @root` (e.g.
+> `grant @root list to *`) and set `root_bypass off`.
 
 ## Prompts
 
@@ -203,7 +214,7 @@ path is refused the pinned state, so `explsmctl unload` first (or reboot).
 - Its files: the policy and claims directories, `/var/lib/explsm`, the
   explsmd, explsm-agent and explsmctl binaries, its unit files and bus policy.
   Anyone may read them; only explsmd may change them, and root while the
-  `@root` bypass is on (so package upgrades work). **With `root_bypass off`,
+  root bypass is `on` or `audit` (so package upgrades work). **With `root_bypass off`,
   root can't edit the policy either**: `explsmctl unload` (or reboot with
   `explsm=off`), edit, start again.
 - Its pins: only explsmd may remove them, whatever the bypass says.
@@ -222,7 +233,7 @@ path is refused the pinned state, so `explsmctl unload` first (or reboot).
 
 ## Behaviour worth knowing
 
-- **Tampering.** Only the same app, explsmd, and root with the bypass on may
+- **Tampering.** Only the same app, explsmd, and root with the bypass may
   ptrace a process of an app, or use what the kernel guards the same way:
   `/proc/<pid>/mem`, `environ`, `fd/`, `maps`, `process_vm_readv/writev`,
   `pidfd_getfd`. So `gdb -p`, `strace -p` and `ls /proc/<pid>/fd` fail on app
@@ -234,7 +245,7 @@ path is refused the pinned state, so `explsmctl unload` first (or reboot).
   `repeated=N`. Attach attempts are logged each time.
 - **Core dumps.** A dump holds the process's memory, and apport or
   systemd-coredump keep it readable by its user. So only the same app,
-  explsmd and root with the bypass on may send an app's process a signal
+  explsmd and root with the bypass may send an app's process a signal
   that dumps core (`SIGSEGV`, `SIGABRT`, `SIGQUIT`, …) or change its resource
   limits (`prlimit`; a low `RLIMIT_CPU` ends in `SIGXCPU`). `SIGTERM`,
   `SIGKILL` and `Ctrl-\` in its own terminal still work.
@@ -278,7 +289,7 @@ sudo ./target/release/explsmd --policy my-policy.d   # or a single .explsm file
 
 Without systemd, log lines go to stdout and diagnostics to stderr. Ctrl-C or
 SIGTERM stops it, SIGHUP reloads the policy. `--no-dbus` skips the D-Bus API,
-`--no-root-bypass` overrides `root_bypass on`, `--log-execs` also logs every
+`--no-root-bypass` overrides `root_bypass on` and `audit`, `--log-execs` also logs every
 exec that gives a process an app identity (`exec` lines; off by default,
 there are many).
 

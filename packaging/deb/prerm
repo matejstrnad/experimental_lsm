@@ -6,10 +6,11 @@
 # `root_bypass off`.
 #
 # upgrade: only stop explsmd. The pinned programs go on enforcing while dpkg
-# replaces the files, which root may with the bypass on, and postinst lets
-# the new explsmd take over if its map layout is the same (otherwise it
-# unloads then). With the bypass off, or no daemon to ask, explsm is
-# unloaded as for a removal and is off for the few seconds an upgrade takes.
+# replaces the files, which root may with the bypass on or in audit mode,
+# and postinst lets the new explsmd take over if its map layout is the same
+# (otherwise it unloads then). With the bypass off, or no daemon to ask,
+# explsm is unloaded as for a removal and is off for the few seconds an
+# upgrade takes.
 set -e
 
 # Through the daemon, or, with none running, by the installed explsmd.
@@ -31,7 +32,7 @@ stop() {
 case "$1" in
 upgrade|failed-upgrade)
     if ! { [ -x /usr/bin/explsmctl ] &&
-        explsmctl status 2>/dev/null | grep -q '^root bypass on'; }; then
+        explsmctl status 2>/dev/null | grep -Eq '^root bypass (on|audit)'; }; then
         unload
     fi
     stop

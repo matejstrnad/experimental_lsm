@@ -43,7 +43,7 @@ use explsm_common::{
 };
 use explsm_ipc::{AppStatus, FileStatus, GrantStatus, ReloadReply, Status};
 use explsm_policy::{
-    Compiled, IdTable, Sources, diag,
+    Compiled, IdTable, RootBypass, Sources, diag,
     resolve::{self, Found, Resolved, key_of, show_key},
     users::{self, User},
 };
@@ -64,6 +64,7 @@ pub const STAT_NAMES: [&str; STATS_LEN as usize] = [
     "dropped",
     "env_dropped",
     "tamper",
+    "bypassed",
 ];
 
 pub struct Options {
@@ -903,7 +904,7 @@ impl State {
             .map(|(k, (uid, _))| (*k, *uid))
             .collect();
 
-        let root_bypass = policy.root_bypass && !self.opts.no_root_bypass;
+        let root_bypass = self.root_bypass(policy);
         let mut daemon_path = DaemonPath {
             path: [0; DAEMON_PATH_LEN],
         };
@@ -913,7 +914,7 @@ impl State {
         }
         Ok(Plan {
             config: vec![
-                (CFG_ROOT_BYPASS, u32::from(root_bypass)),
+                (CFG_ROOT_BYPASS, root_bypass.config_value()),
                 (CFG_DAEMON_TGID, std::process::id()),
                 (CFG_LOG_EXECS, u32::from(self.opts.log_execs)),
             ],
@@ -1180,6 +1181,15 @@ impl State {
             .unwrap_or(0)
     }
 
+    /// The policy's `root_bypass`, unless `--no-root-bypass` turns it off.
+    fn root_bypass(&self, policy: &Compiled) -> RootBypass {
+        if self.opts.no_root_bypass {
+            RootBypass::Off
+        } else {
+            policy.root_bypass
+        }
+    }
+
     pub fn summary(&self) -> String {
         let missing: HashSet<_> = self.resolved.missing.iter().map(|m| &m.path).collect();
         format!(
@@ -1190,11 +1200,7 @@ impl State {
             missing.len(),
             self.policy.grants.len(),
             self.users.len(),
-            if self.policy.root_bypass && !self.opts.no_root_bypass {
-                "on"
-            } else {
-                "off"
-            }
+            self.root_bypass(&self.policy).name()
         )
     }
 
@@ -1293,7 +1299,7 @@ impl State {
             agents: Vec::new(),
             loaded_at: unix_time(self.loaded_at),
             resolved_at: unix_time(self.resolved_at),
-            root_bypass: self.policy.root_bypass && !self.opts.no_root_bypass,
+            root_bypass: self.root_bypass(&self.policy).name().into(),
             generation: self.generation(),
             users: self.users.iter().map(|u| u.name.clone()).collect(),
             apps,
