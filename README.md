@@ -28,7 +28,11 @@ at boot. If you run it on a machine you depend on anyway, read
 - Linux 6.9 or newer with BTF (`/sys/kernel/btf/vmlinux`).
 - Stable Rust and clang. The LSM programs (`explsmd/bpf/`) are C compiled
   with CO-RE: kernel struct offsets are fixed up at load time, so one build
-  runs on any of those kernels without a rebuild.
+  runs on any of those kernels without a rebuild. explsmd checks the
+  arguments of every hook it uses against the kernel's BTF before loading
+  anything, and refuses to start on a kernel whose hooks differ; the one
+  hook that changed since 6.9, `bpf` (a `kernel` argument since 6.15), has
+  a program for each form.
 
 ## Policy
 

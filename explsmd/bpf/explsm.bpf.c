@@ -56,8 +56,10 @@
  *   for explsm's maps, programs and links (OWN_IDS).
  *
  * Kernel struct accesses are CO-RE relocated (see vmlinux.h), so the object
- * runs on any kernel with BTF and the same hook signatures. Programs read
- * their arguments as ctx[n]; the last one is the previous LSM's verdict.
+ * runs on any kernel with BTF. Programs name their hook's arguments
+ * (LSM_PROG in bpf.h), and the daemon checks them against the kernel's
+ * hooks before loading; a hook whose signature changed between supported
+ * kernels has a program for each (bpf, bpf_noflag).
  */
 
 #include "bpf.h"
@@ -835,9 +837,8 @@ static __always_inline int exec_as(struct linux_binprm *bprm,
 
 /* Sleepable: reads the environment of the new process. */
 SEC("lsm.s/bprm_committed_creds")
-int bprm_committed_creds(u64 *ctx)
+int LSM_PROG(bprm_committed_creds, struct linux_binprm *bprm)
 {
-	struct linux_binprm *bprm = (void *)ctx[0];
 	struct file_key key = file_key(bprm->file->f_inode);
 	app_id *found = bpf_map_lookup_elem(&EXES, &key);
 	app_id app = found ? *found : APP_UNCONFINED;
@@ -908,10 +909,8 @@ int bprm_committed_creds(u64 *ctx)
 }
 
 SEC("lsm/task_alloc")
-int task_alloc(u64 *ctx)
+int LSM_PROG(task_alloc, struct task_struct *child, u64 clone_flags, int retval)
 {
-	struct task_struct *child = (void *)ctx[0];
-	int retval = ctx[2];
 	struct task_info *parent =
 		bpf_task_storage_get(&TASKS, bpf_get_current_task_btf(), NULL, 0);
 	if (parent && (parent->app_id != APP_UNCONFINED || parent->flags)) {
@@ -924,10 +923,8 @@ int task_alloc(u64 *ctx)
 }
 
 SEC("lsm/file_open")
-int file_open(u64 *ctx)
+int LSM_PROG(file_open, struct file *file, int retval)
 {
-	struct file *file = (void *)ctx[0];
-	int retval = ctx[1];
 	if (retval)
 		return retval;
 
@@ -972,10 +969,8 @@ int file_open(u64 *ctx)
 }
 
 /* Creating d in directory dir. */
-static __always_inline int on_create(u32 op, u64 *ctx)
+static __always_inline int on_create(u32 op, struct inode *dir, struct dentry *d)
 {
-	struct inode *dir = (void *)ctx[0];
-	struct dentry *d = (void *)ctx[1];
 	bump(STAT_CHECKS);
 	int r = exe_dir(dir, d);
 	if (r)
@@ -984,52 +979,62 @@ static __always_inline int on_create(u32 op, u64 *ctx)
 }
 
 /* Removing d from directory dir. */
-static __always_inline int on_delete(u32 op, u64 *ctx)
+static __always_inline int on_delete(u32 op, struct inode *dir, struct dentry *d)
 {
-	struct inode *dir = (void *)ctx[0];
-	struct dentry *d = (void *)ctx[1];
 	bump(STAT_CHECKS);
 	return check(op, owner_in(dir, d), PERM_DELETE, 0, d);
 }
 
-/* A hook whose previous verdict is ctx[ret] and that is checked by fn. */
-#define DIR_HOOK(name, ret, fn, op)                                            \
-	SEC("lsm/" #name)                                                      \
-	int name(u64 *ctx)                                                     \
-	{                                                                      \
-		int retval = ctx[ret];                                         \
-		if (retval)                                                    \
-			return retval;                                         \
-		return fn(op, ctx);                                            \
-	}
-
-DIR_HOOK(inode_create, 3, on_create, OP_CREATE)
-DIR_HOOK(inode_mknod, 4, on_create, OP_MKNOD)
-DIR_HOOK(inode_symlink, 3, on_create, OP_SYMLINK)
-DIR_HOOK(inode_unlink, 2, on_delete, OP_UNLINK)
-
-/* inode_rmdir(dir, dentry) */
-SEC("lsm/inode_rmdir")
-int inode_rmdir(u64 *ctx)
+SEC("lsm/inode_create")
+int LSM_PROG(inode_create, struct inode *dir, struct dentry *d, umode_t mode, int retval)
 {
-	struct dentry *d = (void *)ctx[1];
-	int retval = ctx[2];
+	if (retval)
+		return retval;
+	return on_create(OP_CREATE, dir, d);
+}
+
+SEC("lsm/inode_mknod")
+int LSM_PROG(inode_mknod, struct inode *dir, struct dentry *d, umode_t mode, dev_t dev,
+	     int retval)
+{
+	if (retval)
+		return retval;
+	return on_create(OP_MKNOD, dir, d);
+}
+
+SEC("lsm/inode_symlink")
+int LSM_PROG(inode_symlink, struct inode *dir, struct dentry *d, const char *old_name,
+	     int retval)
+{
+	if (retval)
+		return retval;
+	return on_create(OP_SYMLINK, dir, d);
+}
+
+SEC("lsm/inode_unlink")
+int LSM_PROG(inode_unlink, struct inode *dir, struct dentry *d, int retval)
+{
+	if (retval)
+		return retval;
+	return on_delete(OP_UNLINK, dir, d);
+}
+
+SEC("lsm/inode_rmdir")
+int LSM_PROG(inode_rmdir, struct inode *dir, struct dentry *d, int retval)
+{
 	if (retval)
 		return retval;
 	int r = exe_path(d);
 	if (r)
 		return r;
-	return on_delete(OP_RMDIR, ctx);
+	return on_delete(OP_RMDIR, dir, d);
 }
 
-/* inode_mkdir(dir, dentry, mode). A folder an app creates right in one of
- * CLAIM_PARENTS is reported for auto-claim. */
+/* A folder an app creates right in one of CLAIM_PARENTS is reported for
+ * auto-claim. */
 SEC("lsm/inode_mkdir")
-int inode_mkdir(u64 *ctx)
+int LSM_PROG(inode_mkdir, struct inode *dir, struct dentry *d, umode_t mode, int retval)
 {
-	struct inode *dir = (void *)ctx[0];
-	struct dentry *d = (void *)ctx[1];
-	int retval = ctx[3];
 	if (retval)
 		return retval;
 
@@ -1057,14 +1062,9 @@ int inode_mkdir(u64 *ctx)
 	return 0;
 }
 
-/* inode_link(old_dentry, dir, new_dentry) */
 SEC("lsm/inode_link")
-int inode_link(u64 *ctx)
+int LSM_PROG(inode_link, struct dentry *old, struct inode *dir, struct dentry *new, int retval)
 {
-	struct dentry *old = (void *)ctx[0];
-	struct inode *dir = (void *)ctx[1];
-	struct dentry *new = (void *)ctx[2];
-	int retval = ctx[3];
 	if (retval)
 		return retval;
 
@@ -1083,16 +1083,11 @@ int inode_link(u64 *ctx)
 	return 0;
 }
 
-/* inode_rename(old_dir, old_dentry, new_dir, new_dentry). For
- * RENAME_EXCHANGE the kernel calls it twice, once in each direction. */
+/* For RENAME_EXCHANGE the kernel calls it twice, once in each direction. */
 SEC("lsm/inode_rename")
-int inode_rename(u64 *ctx)
+int LSM_PROG(inode_rename, struct inode *old_dir, struct dentry *old, struct inode *new_dir,
+	     struct dentry *new, int retval)
 {
-	struct inode *old_dir = (void *)ctx[0];
-	struct dentry *old = (void *)ctx[1];
-	struct inode *new_dir = (void *)ctx[2];
-	struct dentry *new = (void *)ctx[3];
-	int retval = ctx[4];
 	if (retval)
 		return retval;
 
@@ -1149,14 +1144,11 @@ int inode_rename(u64 *ctx)
 	return 0;
 }
 
-/* inode_setattr(idmap, dentry, attr). A size change is a write; mode, owner
- * and time changes need setattr. */
+/* A size change is a write; mode, owner and time changes need setattr. */
 SEC("lsm/inode_setattr")
-int inode_setattr(u64 *ctx)
+int LSM_PROG(inode_setattr, struct mnt_idmap *idmap, struct dentry *d, struct iattr *attr,
+	     int retval)
 {
-	struct dentry *d = (void *)ctx[1];
-	struct iattr *attr = (void *)ctx[2];
-	int retval = ctx[3];
 	if (retval)
 		return retval;
 
@@ -1213,44 +1205,38 @@ static __always_inline int on_xattr(u32 op, struct dentry *d, const char *name)
 	return -EPERM;
 }
 
-/* inode_setxattr(idmap, dentry, name, value, size, flags) */
 SEC("lsm/inode_setxattr")
-int inode_setxattr(u64 *ctx)
+int LSM_PROG(inode_setxattr, struct mnt_idmap *idmap, struct dentry *d, const char *name,
+	     const void *value, u64 size, int flags, int retval)
 {
-	int retval = ctx[6];
 	if (retval)
 		return retval;
-	return on_xattr(OP_SETXATTR, (void *)ctx[1], (void *)ctx[2]);
+	return on_xattr(OP_SETXATTR, d, name);
 }
 
-/* inode_removexattr(idmap, dentry, name) */
 SEC("lsm/inode_removexattr")
-int inode_removexattr(u64 *ctx)
+int LSM_PROG(inode_removexattr, struct mnt_idmap *idmap, struct dentry *d, const char *name,
+	     int retval)
 {
-	int retval = ctx[3];
 	if (retval)
 		return retval;
-	return on_xattr(OP_REMOVEXATTR, (void *)ctx[1], (void *)ctx[2]);
+	return on_xattr(OP_REMOVEXATTR, d, name);
 }
 
-/* inode_set_acl(idmap, dentry, acl_name, kacl) */
 SEC("lsm/inode_set_acl")
-int inode_set_acl(u64 *ctx)
+int LSM_PROG(inode_set_acl, struct mnt_idmap *idmap, struct dentry *d, const char *acl_name,
+	     struct posix_acl *kacl, int retval)
 {
-	struct dentry *d = (void *)ctx[1];
-	int retval = ctx[4];
 	if (retval)
 		return retval;
 	bump(STAT_CHECKS);
 	return check(OP_SET_ACL, walk_owner(d), PERM_SETATTR, 0, d);
 }
 
-/* inode_remove_acl(idmap, dentry, acl_name) */
 SEC("lsm/inode_remove_acl")
-int inode_remove_acl(u64 *ctx)
+int LSM_PROG(inode_remove_acl, struct mnt_idmap *idmap, struct dentry *d, const char *acl_name,
+	     int retval)
 {
-	struct dentry *d = (void *)ctx[1];
-	int retval = ctx[3];
 	if (retval)
 		return retval;
 	bump(STAT_CHECKS);
@@ -1274,14 +1260,11 @@ static __always_inline app_id app_of(struct task_struct *task)
 	return info ? info->app_id : APP_UNCONFINED;
 }
 
-/* ptrace_access_check(child, mode): ptrace attach, /proc/<pid>/mem, environ,
- * fd/, maps, process_vm_readv/writev, pidfd_getfd. */
+/* ptrace attach, /proc/<pid>/mem, environ, fd/, maps,
+ * process_vm_readv/writev, pidfd_getfd. */
 SEC("lsm/ptrace_access_check")
-int ptrace_access_check(u64 *ctx)
+int LSM_PROG(ptrace_access_check, struct task_struct *child, u32 mode, int retval)
 {
-	struct task_struct *child = (void *)ctx[0];
-	u32 mode = ctx[1];
-	int retval = ctx[2];
 	if (retval)
 		return retval;
 	app_id target = app_of(child);
@@ -1292,12 +1275,10 @@ int ptrace_access_check(u64 *ctx)
 		      !(mode & PTRACE_MODE_NOAUDIT));
 }
 
-/* ptrace_traceme(parent): the current task asks parent to trace it. */
+/* The current task asks parent to trace it. */
 SEC("lsm/ptrace_traceme")
-int ptrace_traceme(u64 *ctx)
+int LSM_PROG(ptrace_traceme, struct task_struct *parent, int retval)
 {
-	struct task_struct *parent = (void *)ctx[0];
-	int retval = ctx[1];
 	if (retval)
 		return retval;
 	app_id target = current_app();
@@ -1337,15 +1318,13 @@ static __always_inline int dumps_core(int sig)
 	return 0;
 }
 
-/* task_kill(p, info, sig, cred): a signal that dumps core makes the app's
- * memory readable by its user (apport, systemd-coredump). Faults the kernel
- * raises itself don't come through here. */
+/* A signal that dumps core makes the app's memory readable by its user
+ * (apport, systemd-coredump). Faults the kernel raises itself don't come
+ * through here. */
 SEC("lsm/task_kill")
-int task_kill(u64 *ctx)
+int LSM_PROG(task_kill, struct task_struct *p, struct kernel_siginfo *info, int sig,
+	     const struct cred *cred, int retval)
 {
-	struct task_struct *p = (void *)ctx[0];
-	int sig = ctx[2];
-	int retval = ctx[4];
 	if (retval)
 		return retval;
 	if (!dumps_core(sig))
@@ -1357,14 +1336,12 @@ int task_kill(u64 *ctx)
 	return tamper(OP_SIGNAL, subject, target, sig, p->tgid, NULL, 1);
 }
 
-/* task_setrlimit(p, resource, new_rlim): a low RLIMIT_CPU or RLIMIT_FSIZE
- * makes the kernel send the app a signal that dumps core. */
+/* A low RLIMIT_CPU or RLIMIT_FSIZE makes the kernel send the app a signal
+ * that dumps core. */
 SEC("lsm/task_setrlimit")
-int task_setrlimit(u64 *ctx)
+int LSM_PROG(task_setrlimit, struct task_struct *p, u32 resource, struct rlimit *new_rlim,
+	     int retval)
 {
-	struct task_struct *p = (void *)ctx[0];
-	u32 resource = ctx[1];
-	int retval = ctx[3];
 	if (retval)
 		return retval;
 	app_id target = app_of(p);
@@ -1396,46 +1373,55 @@ static __always_inline int own_object(u32 kind, u32 id)
 	return -EPERM;
 }
 
-/* bpf_map(map, fmode): a new fd for a map (by id, from a pin, or created). */
+/* A new fd for a map (by id, from a pin, or created). */
 SEC("lsm/bpf_map")
-int bpf_map(u64 *ctx)
+int LSM_PROG(bpf_map, struct bpf_map *map, u32 fmode, int retval)
 {
-	struct bpf_map *map = (void *)ctx[0];
-	int retval = ctx[2];
 	if (retval)
 		return retval;
 	return own_object(OWN_MAP, map->id);
 }
 
-/* bpf_prog(prog): a new fd for a program. */
+/* A new fd for a program. */
 SEC("lsm/bpf_prog")
-int bpf_prog(u64 *ctx)
+int LSM_PROG(bpf_prog, struct bpf_prog *prog, int retval)
 {
-	struct bpf_prog *prog = (void *)ctx[0];
-	int retval = ctx[1];
 	if (retval)
 		return retval;
 	return own_object(OWN_PROG, prog->aux->id);
 }
 
-/* bpf(cmd, attr, size, kernel): links have no hook of their own, so their
- * ids are checked here. attr is the kernel's copy; the id of a
- * *_GET_FD_BY_ID command is its first field (UAPI). */
-SEC("lsm/bpf")
-int bpf(u64 *ctx)
+/* Links have no hook of their own, so their ids are checked in bpf(). attr
+ * is the kernel's copy; the id of a *_GET_FD_BY_ID command is its first
+ * field (UAPI). Calls the kernel makes itself are let through. */
+static __always_inline int on_bpf(int cmd, void *attr, int kernel)
 {
-	int cmd = ctx[0];
-	void *attr = (void *)ctx[1];
-	int kernel = ctx[3] & 1;
-	int retval = ctx[4];
-	if (retval)
-		return retval;
 	if (kernel || cmd != BPF_LINK_GET_FD_BY_ID)
 		return 0;
 	u32 id = 0;
 	if (bpf_probe_read_kernel(&id, sizeof(id), attr))
 		return 0;
 	return own_object(OWN_LINK, id);
+}
+
+/* Linux 6.15 and later: bpf(cmd, attr, size, kernel). A bool is only its
+ * low byte. */
+SEC("lsm/bpf")
+int LSM_PROG(bpf, int cmd, union bpf_attr *attr, u32 size, u32 kernel, int retval)
+{
+	if (retval)
+		return retval;
+	return on_bpf(cmd, attr, kernel & 0xff);
+}
+
+/* Linux 6.9 to 6.14: bpf(cmd, attr, size), with no way to tell the
+ * kernel's own calls, which are checked like any other. */
+SEC("lsm/bpf")
+int LSM_PROG(bpf_noflag, int cmd, union bpf_attr *attr, u32 size, int retval)
+{
+	if (retval)
+		return retval;
+	return on_bpf(cmd, attr, 0);
 }
 
 /* GPL-compatible: bpf_d_path and friends are GPL-only. */

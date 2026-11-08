@@ -27,6 +27,7 @@ mod dbus;
 mod desk;
 mod events;
 mod grants;
+mod hooks;
 mod journal;
 mod labels;
 mod pin;
@@ -65,32 +66,6 @@ use crate::{
 };
 
 static EXPLSM: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/explsm"));
-
-/// Programs that check accesses. Attached after seeding, so running apps
-/// have their identity before anything they do is looked at.
-const ACCESS_HOOKS: &[&str] = &[
-    "file_open",
-    "inode_create",
-    "inode_mkdir",
-    "inode_mknod",
-    "inode_symlink",
-    "inode_link",
-    "inode_unlink",
-    "inode_rmdir",
-    "inode_rename",
-    "inode_setattr",
-    "inode_setxattr",
-    "inode_removexattr",
-    "inode_set_acl",
-    "inode_remove_acl",
-    "ptrace_access_check",
-    "ptrace_traceme",
-    "task_kill",
-    "task_setrlimit",
-    "bpf_map",
-    "bpf_prog",
-    "bpf",
-];
 
 /// Quiet time after a change in a watched directory before resolving again,
 /// so a package update that touches many files causes one rescan.
@@ -169,16 +144,15 @@ fn verifier_tail(e: ProgramError) -> anyhow::Error {
     }
 }
 
-/// Programs that give processes their identity. Attached before seeding.
-const IDENTITY_HOOKS: &[&str] = &["task_alloc", "bprm_committed_creds"];
-
-/// Load `prog` and have the verifier check it, and note its id.
-fn load(ebpf: &mut Ebpf, btf: &Btf, own: &mut HashMap<OwnKey, u32>, prog: &str) -> Result<()> {
+/// Load `h.prog` for its hook and have the verifier check it, and note its
+/// id.
+fn load(ebpf: &mut Ebpf, btf: &Btf, own: &mut HashMap<OwnKey, u32>, h: &hooks::Hook) -> Result<()> {
+    let prog = h.prog;
     let p: &mut Lsm = ebpf
         .program_mut(prog)
         .with_context(|| format!("program {prog} missing"))?
         .try_into()?;
-    p.load(prog, btf)
+    p.load(h.hook, btf)
         .map_err(verifier_tail)
         .with_context(|| format!("loading {prog}"))?;
     let id = p.info()?.id();
@@ -192,17 +166,18 @@ fn attach_all(
     ebpf: &mut Ebpf,
     pins: &mut pin::Pins,
     own: &mut HashMap<OwnKey, u32>,
-    progs: &[&str],
+    progs: &[hooks::Hook],
 ) -> Result<()> {
     let mut stage = || -> Result<()> {
-        for prog in progs {
+        for &hooks::Hook { prog, hook } in progs {
             let p: &mut Lsm = ebpf
                 .program_mut(prog)
                 .with_context(|| format!("program {prog} missing"))?
                 .try_into()?;
             let link = p.attach().with_context(|| format!("attaching {prog}"))?;
             let link = FdLink::from(p.take_link(link)?);
-            let id = pins.stage(prog, link)?;
+            // Pinned by hook, whichever variant of the program it is.
+            let id = pins.stage(hook, link)?;
             own.insert(OwnKey { kind: own_kind::LINK, id }, 1);
         }
         Ok(())
@@ -270,6 +245,10 @@ fn unload_standalone(cli: &Cli) -> Result<()> {
 /// and attach the programs.
 fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
     let reused = pins.reused();
+    // The kernel's hooks must be the ones the programs were written for.
+    let kernel_btf = fs::read(hooks::KERNEL_BTF)
+        .with_context(|| format!("reading {} (explsm needs BTF)", hooks::KERNEL_BTF))?;
+    let progs = hooks::select(&kernel_btf)?;
     // TASK_STORAGE has no Aya userspace type yet; it still loads as an
     // "unsupported" map, which is all the programs need.
     let mut ebpf = EbpfLoader::new()
@@ -293,8 +272,8 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
     // kernel refuses changes nothing.
     let btf = Btf::from_sys_fs()?;
     let mut own = HashMap::new();
-    for prog in IDENTITY_HOOKS.iter().chain(ACCESS_HOOKS) {
-        load(&mut ebpf, &btf, &mut own, prog)?;
+    for h in progs.all() {
+        load(&mut ebpf, &btf, &mut own, h)?;
     }
     for id in pins.map_ids()? {
         own.insert(OwnKey { kind: own_kind::MAP, id }, 1);
@@ -318,7 +297,7 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
     )?;
     eprintln!("explsmd: policy loaded: {}", state.summary());
 
-    attach_all(&mut state.ebpf, pins, &mut own, IDENTITY_HOOKS)?;
+    attach_all(&mut state.ebpf, pins, &mut own, &progs.identity)?;
     if cli.no_seed {
         // The daemon itself needs its identity for its own files.
         let me: HashMap<_, _> = state
@@ -332,7 +311,7 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
         state.seed_terminals()?;
         state.seeding = true;
     }
-    attach_all(&mut state.ebpf, pins, &mut own, ACCESS_HOOKS)?;
+    attach_all(&mut state.ebpf, pins, &mut own, &progs.access)?;
     state.set_own_ids(&own)?;
     Ok(state)
 }

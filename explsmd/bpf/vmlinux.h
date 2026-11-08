@@ -38,6 +38,13 @@ struct cred {
 
 struct tty_struct;
 
+/* Hook arguments that are passed on or not read. */
+struct mnt_idmap;
+struct posix_acl;
+struct kernel_siginfo;
+struct rlimit;
+union bpf_attr;
+
 struct signal_struct {
 	struct tty_struct *tty;
 };
