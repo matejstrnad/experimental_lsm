@@ -120,7 +120,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, 1024);
+	__uint(max_entries, MAX_EXES);
 	__type(key, struct file_key);
 	__type(value, app_id);
 } EXES SEC(".maps");
@@ -130,7 +130,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, 65536);
+	__uint(max_entries, MAX_ROOTS);
 	__type(key, struct file_key);
 	__type(value, app_id);
 } ROOTS SEC(".maps");
@@ -148,7 +148,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, 256);
+	__uint(max_entries, MAX_TERMINALS);
 	__type(key, struct file_key);
 	__type(value, u32);
 } TERMINALS SEC(".maps");

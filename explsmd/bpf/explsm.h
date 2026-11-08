@@ -18,6 +18,9 @@ typedef u32 app_id;
 #define MAX_APPS 256
 #define MAX_GRANTS 4096
 #define MAX_ALLOWED_ENV 256
+#define MAX_EXES 1024
+#define MAX_ROOTS 65536
+#define MAX_TERMINALS 256
 #define APP_AGENT (MAX_APPS - 1)
 #define APP_DAEMON (MAX_APPS - 2)
 #define OWNER_PINS (MAX_APPS - 3)

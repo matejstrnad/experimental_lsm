@@ -7,7 +7,7 @@ use std::{
 
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
-    MAX_GRANTS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_TERMINAL,
+    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_TERMINAL,
     app_flag, perm,
 };
 
@@ -215,6 +215,20 @@ impl App {
     pub fn flags(&self) -> u32 {
         if self.inherit { app_flag::INHERIT } else { 0 }
     }
+}
+
+/// An error if more distinct absolute paths without a glob are in `pats` than
+/// `cap` entries of the map they go into.
+fn too_many_paths(what: &str, map: &str, cap: usize, pats: &[&PathPat]) -> Option<Diagnostic> {
+    let mut seen = std::collections::HashSet::new();
+    let over = pats
+        .iter()
+        .filter(|p| !p.home && !p.glob)
+        .find(|p| seen.insert(&p.path) && seen.len() > cap)?;
+    Some(
+        Diagnostic::error(over.span, format!("too many {what} paths: at most {cap}"))
+            .note(format!("each file they name is an entry of the {map} map")),
+    )
 }
 
 /// The variables the exec hook looks at; only these can be allowed by `env`.
@@ -535,6 +549,21 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     .chain(o.err())
                     .map(|d| soften(d, &policy.lenient)),
             ),
+        }
+    }
+
+    // What the paths resolve to is only known to the daemon, which checks
+    // it again; an absolute path without a glob is at least one entry.
+    // explsmd and explsm-agent take up to three exes.
+    let exes = apps.iter().flat_map(|a| &a.exes);
+    let roots = apps.iter().flat_map(|a| &a.roots);
+    for (what, map, cap, pats) in [
+        ("exe", "EXES", MAX_EXES as usize - 3, exes.collect::<Vec<_>>()),
+        ("owned", "ROOTS", MAX_ROOTS as usize, roots.collect()),
+        ("terminal", "TERMINALS", MAX_TERMINALS as usize, terminals.iter().collect()),
+    ] {
+        if let Some(d) = too_many_paths(what, map, cap, &pats) {
+            diags.push(d);
         }
     }
 
@@ -927,6 +956,25 @@ mod tests {
             }
         }
         assert_eq!(errors(&text), [format!("too many grants: at most {MAX_GRANTS}")]);
+    }
+
+    #[test]
+    fn too_many_paths() {
+        let exes: Vec<_> = (0..MAX_EXES - 3).map(|i| format!("\"/bin/e{i}\"")).collect();
+        let text = format!("app a {{ exe {} }}", exes.join(", "));
+        compiled(&text);
+        // The same path twice is one entry; one more is too many.
+        let more = format!("app a {{ exe {}, \"/bin/e0\" }}", exes.join(", "));
+        compiled(&more);
+        let more = format!("app a {{ exe {}, \"/bin/x\" }}", exes.join(", "));
+        assert_eq!(errors(&more), [format!("too many exe paths: at most {}", MAX_EXES - 3)]);
+        // Globs and home paths may match nothing; only the daemon can tell.
+        let globs = format!("app a {{ exe {}, \"/bin/x*\", \"~/x\" }}", exes.join(", "));
+        compiled(&globs);
+
+        let terminals: Vec<_> = (0..=MAX_TERMINALS).map(|i| format!("\"/bin/t{i}\"")).collect();
+        let text = format!("terminal {}", terminals.join(", "));
+        assert_eq!(errors(&text), [format!("too many terminal paths: at most {MAX_TERMINALS}")]);
     }
 
     #[test]

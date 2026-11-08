@@ -42,9 +42,16 @@ An application: what identifies it (`exe`) and the data it owns (`owns`).
 
 App names are words of letters, digits, `_`, `-` and `.`. `unconfined`,
 `all`, `terminal`, `unknown`, `explsm-agent`, `explsmd` and `explsm-pins` are
-reserved. At most 251 different app names can be used until explsm is unloaded: ids are
-not reused, because running processes keep theirs, and they are kept across
-daemon restarts in `/var/lib/explsm/ids`.
+reserved. At most 251 different app names can be used until explsm is
+unloaded: ids are not reused, because running processes keep theirs, and
+they are kept across daemon restarts in `/var/lib/explsm/ids`.
+
+The kernel's maps hold at most 4096 grants (one per subject and owner), 256
+`env` strings, 1021 exes, 65536 owned files and folders (with the files that
+have more than one hard link inside them) and 256 terminal exes. The
+compiler refuses a policy over a limit it can count (grants, `env` strings,
+absolute paths without a glob); what globs and `~/` paths resolve to is
+checked when the daemon applies the policy, which then keeps the old one.
 
 An exe that a user other than root could replace (owned by a user, writable
 by group or others, or in such a directory) is protected like the app's data:

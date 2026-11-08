@@ -22,6 +22,18 @@ pub const MAX_GRANTS: u32 = 4096;
 /// Entries of `ALLOWED_ENV`: `env` strings of all apps together.
 pub const MAX_ALLOWED_ENV: u32 = 256;
 
+/// Entries of `EXES`: the files the `exe` paths of all apps resolve to,
+/// and explsm's own.
+pub const MAX_EXES: u32 = 1024;
+
+/// Entries of `ROOTS`: the files the `owns` and `claim` paths resolve to,
+/// user-writable app exes, files with more than one hard link inside a
+/// root, and explsm's own files.
+pub const MAX_ROOTS: u32 = 65536;
+
+/// Entries of `TERMINALS`: the files the `terminal` paths resolve to.
+pub const MAX_TERMINALS: u32 = 256;
+
 /// Identity of `explsm-agent`, outside the ids the policy assigns. The
 /// daemon only takes prompt answers from a process with this identity.
 pub const APP_AGENT: AppId = MAX_APPS - 1;
@@ -527,7 +539,7 @@ mod tests {
     #[test]
     fn layout_version_follows_the_maps() {
         let base = layout_version(HEADER, BPF);
-        let bigger = BPF.replace("__uint(max_entries, 65536);", "__uint(max_entries, 131072);");
+        let bigger = BPF.replacen("__uint(max_entries, 4096);", "__uint(max_entries, 8192);", 1);
         assert_ne!(bigger, BPF);
         assert_ne!(layout_version(HEADER, &bigger), base);
         let epoch = HEADER.replace("#define LAYOUT_EPOCH 1", "#define LAYOUT_EPOCH 2");
