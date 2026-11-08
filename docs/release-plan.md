@@ -43,10 +43,10 @@ features planned after that. Items are in the order they should be done.
 
 ## 3. Release engineering
 
-- CI (GitHub Actions): `cargo fmt --check`, `clippy -D warnings`,
-  `cargo test`, the BPF build, and the smoke tests in a VM on at least the
-  oldest supported kernel, the Ubuntu LTS kernel and the newest one
-  (virtme-ng or vmtest).
+- Done (2026-11-08): CI (`.github/workflows/ci.yml`): `cargo fmt --check`,
+  `clippy -D warnings`, `cargo test`, the release build, and every smoke
+  test in a virtme-ng VM (`tests/vm-smoke.sh`, `tests/run-all.sh`) on
+  Ubuntu mainline 6.9, 6.15 and 7.3.3.
 - Pin the toolchain (`rust-toolchain.toml`) and use `--locked` everywhere.
 - CHANGELOG.md, SECURITY.md (how to report), CONTRIBUTING.md.
 - Man pages for `explsmd(8)`, `explsmctl(8)` and `explsm.policy(5)`.
@@ -119,16 +119,26 @@ Already in place: an app's exe in a user-writable place is treated as the
 app's own data, so other processes of the user can't replace it, add files
 next to it or move its folder aside (see `docs/threat-model.md`).
 
+Done (2026-11-08):
+
+- **Trust on first use**, in part: `exe "PATH" sha256 "HEX"` and
+  `hashes "FILE"` (a root-owned `sha256sum` list) pin what an exe path may
+  be; a file it matches with none of the hashes is refused and reported.
+  Tested by `tests/guard-smoke.sh`.
+- **Root-owned exes** are documented as trusted (`docs/threat-model.md`,
+  `docs/dsl.md`), and `explsmctl status` notes each exe as user-writable
+  (protected) or trusted, and whether its hash is pinned.
+
 Left to do:
 
-- **Trust on first use.** A path or glob that matches nothing yet is not
-  guarded; whatever appears there first becomes the app. Make policy able to
-  pin a hash or a signer, or ask the user when an unknown exe first matches.
-- **Updates.** An app that updates itself decides its next version. For
-  apps with signed updates, check the signature before the new exe gets the
-  identity (fs-verity digests, or a hash list the app publishes).
-- **Root-owned exes** (`/usr/bin/...`) are trusted because only root can
-  change them; say so in the docs and in `explsmctl status`.
+- **Ask on first match**: ask the user when an unknown exe first matches a
+  path that has no pin. Needs a prompt type of its own in the agent.
+- **Updates.** An app that updates itself decides its next version. A hash
+  list works if root updates it; for apps with signed updates, check the
+  signature before the new exe gets the identity (fs-verity digests, or a
+  signed hash list the app publishes). Which scheme to support is open.
+- The hash is taken when the daemon resolves the path, before the file is
+  guarded: a short race for a user-writable file.
 
 ## 6. Feature: own GUI for prompts
 
@@ -315,7 +325,11 @@ token, editing the policy.
 
 ## 9. Who started the app
 
-Plan only; nothing here is implemented yet. Comes after section 8 stage 2.
+Done (2026-11-08) except 9.4: `code`, `started_by` with `shell` and
+`desktop`, the launcher warnings, `deny_args`, and the ssh example
+(`packaging/examples/ssh-agent.explsm`); tested by `tests/launch-smoke.sh`.
+9.3 is `launch_files` (audit by default) with grants to `@launch`.
+Section 8 stage 2 is still open.
 
 ### The problem
 
