@@ -30,6 +30,10 @@ typedef u32 app_id;
 /* Owner of an object whose d_parent walk ran out before a root or the
  * filesystem root. Enforced if any app is. */
 #define OWNER_UNKNOWN (MAX_APPS - 4)
+/* Owner of the files that start programs for a user (~/.bashrc, autostart,
+ * user units, .desktop files): anyone may read them, only granted apps
+ * change them. */
+#define OWNER_LAUNCH (MAX_APPS - 5)
 /* Set in a ROOTS value: the entry is a user-writable app exe, which anyone
  * may read (and so run) but only its app may change. */
 #define OWNER_EXE 0x80000000u

@@ -63,6 +63,8 @@ if [[ $NOT_A_VM -ne 1 ]] && ! in_vm; then
     echo "this is not a VM; run tests/vm-smoke.sh instead, or pass --not-a-vm" >&2
     exit 2
 fi
+# Tests that change root's own files run only then.
+export SMOKE_IN_VM=1
 BIN=$(realpath "$BIN")
 AGENT_BIN=$(realpath -m "$AGENT_BIN")
 cd "$ROOT" || exit 2

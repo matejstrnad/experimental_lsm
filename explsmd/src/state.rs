@@ -39,12 +39,12 @@ use aya::{
 use explsm_common::{
     APP_AGENT, APP_DAEMON, AppId, ArgKey, ArgLens, CFG_DAEMON_TGID, CFG_GENERATION, CFG_LOG_EXECS,
     CFG_ROOT_BYPASS, DAEMON_PATH_LEN, DaemonPath, EnvKey, FileKey, GrantKey, MODE_AUDIT,
-    MODE_ENFORCE, OWNER_EXE, OWNER_PINS, OWNER_UNKNOWN, OwnKey, STATS_LEN, StartKey, TempKey, perm,
-    term,
+    MODE_ENFORCE, OWNER_EXE, OWNER_LAUNCH, OWNER_PINS, OWNER_UNKNOWN, OwnKey, STATS_LEN, StartKey,
+    TempKey, perm, term,
 };
 use explsm_ipc::{AppStatus, FileStatus, GrantStatus, ReloadReply, Status};
 use explsm_policy::{
-    Compiled, IdTable, RootBypass, Sources, diag,
+    Compiled, IdTable, Mode, RootBypass, Sources, diag,
     resolve::{self, Found, Resolved, key_of, show_key},
     users::{self, User},
 };
@@ -723,7 +723,12 @@ impl State {
                 name(m.app)
             );
         }
-        for m in new.missing.iter().filter(|m| !old.missing.contains(m)) {
+        // Most users lack some of the launch files; that is no news.
+        for m in new
+            .missing
+            .iter()
+            .filter(|m| m.app != OWNER_LAUNCH && !old.missing.contains(m))
+        {
             eprintln!(
                 "explsmd:   {} {} of {} does not exist (yet)",
                 m.kind.name(),
@@ -963,6 +968,10 @@ impl State {
         modes.insert(APP_AGENT, MODE_ENFORCE);
         modes.insert(APP_DAEMON, MODE_ENFORCE);
         modes.insert(OWNER_PINS, MODE_ENFORCE);
+        modes.insert(
+            OWNER_LAUNCH,
+            policy.launch_files.map_or(MODE_AUDIT, Mode::map_value),
+        );
         let terminals: HashMap<FileKey, u32> = self
             .resolved
             .terminals

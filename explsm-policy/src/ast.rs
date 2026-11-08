@@ -16,6 +16,8 @@ pub enum Item {
     RootBypass(Spanned<RootBypass>),
     /// `fail_closed on|off`
     FailClosed(Spanned<bool>),
+    /// `launch_files off|audit|enforce`, as written.
+    LaunchFiles(Spanned<String>),
     /// `require_sandbox on|off`
     RequireSandbox(Spanned<bool>),
     /// `require_dbus on|off`

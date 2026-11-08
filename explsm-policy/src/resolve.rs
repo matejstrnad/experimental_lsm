@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use explsm_common::{APP_UNCONFINED, AppId, FileKey, term};
+use explsm_common::{APP_UNCONFINED, AppId, FileKey, OWNER_LAUNCH, term};
 
 use sha2::{Digest as _, Sha256};
 
@@ -161,6 +161,19 @@ pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String
                     resolve_one(policy, (app.id, 0), kind, pat, &path, &mut out, &mut errors);
                 }
             }
+        }
+    }
+    for pat in &policy.launch_paths() {
+        for path in pat.expand(users) {
+            resolve_one(
+                policy,
+                (OWNER_LAUNCH, 0),
+                Kind::Root,
+                pat,
+                &path,
+                &mut out,
+                &mut errors,
+            );
         }
     }
     for (bit, pats) in [
@@ -433,7 +446,8 @@ mod tests {
         fs::create_dir(d.join("versions/3.0")).unwrap(); // not a file
         symlink(d.join("versions/2.0"), d.join("current")).unwrap();
         let p = policy(&format!(
-            r#"app a {{
+            r#"launch_files off
+               app a {{
                 exe "{d}/versions/[0-9]*", "{d}/current", "{d}/none"
                 owns "~/.a", "~/.b/deep"
             }}"#,

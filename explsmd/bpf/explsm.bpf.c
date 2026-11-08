@@ -655,6 +655,13 @@ static __always_inline u32 missing(app_id subject, app_id owner, u32 perms)
 		}
 		return unless_bypass(perms);
 	}
+	/* The files that launch things: no secret, but what changes them
+	 * decides what the user's shell and desktop run. */
+	if (owner == OWNER_LAUNCH) {
+		perms &= ~(PERM_READ | PERM_LIST);
+		if (!perms)
+			return 0;
+	}
 	u32 lacking = perms & ~granted(subject, owner);
 	if (!lacking)
 		return 0;

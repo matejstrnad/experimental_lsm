@@ -69,6 +69,12 @@ pub const OWNER_PINS: AppId = MAX_APPS - 3;
 /// through. Never cached.
 pub const OWNER_UNKNOWN: AppId = MAX_APPS - 4;
 
+/// Owner of the files that start programs for a user (`launch_files`):
+/// `~/.bashrc` and the other shell startup files, `~/.config/autostart`,
+/// `~/.config/systemd/user`, `~/.local/share/applications`. Anyone may read
+/// them; changing them needs a grant to `@launch`.
+pub const OWNER_LAUNCH: AppId = MAX_APPS - 5;
+
 /// Set in a `ROOTS` value: the entry is a user-writable app exe. Anyone may
 /// read (and so run) it, only its app may change it.
 pub const OWNER_EXE: u32 = 1 << 31;

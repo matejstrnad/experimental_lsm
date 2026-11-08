@@ -75,6 +75,11 @@ whatever the policy explicitly grants.
     stops background malware from asking; nothing stops the user's own
     script. Don't make such apps the owner of credentials that matter.
 
+  `started_by` trusts what the shell and the desktop run, so the files
+  they start programs from (`~/.bashrc`, autostart entries, user units,
+  `.desktop` overrides) belong to `@launch` (`launch_files`): in audit mode
+  by default, changes are only reported until it is `enforce`.
+
   For keys, keep them behind `ssh-agent` with `ssh-add -c` or a FIDO key
   (see `packaging/examples/ssh-agent.explsm`).
 - **Prompts are not blocking.** The first denied access fails with `EACCES`;

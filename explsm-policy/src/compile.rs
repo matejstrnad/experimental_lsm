@@ -8,8 +8,8 @@ use std::{
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ArgKey, ArgLens, ENV_CHUNK, EnvKey, GrantKey,
     MAX_ALLOWED_ENV, MAX_ARG_LENS, MAX_DENY_ARGS, MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS,
-    MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_DESKTOP, SUBJECT_ROOT,
-    SUBJECT_TERMINAL, StartKey, app_flag, perm, root_bypass,
+    MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_LAUNCH, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_DESKTOP,
+    SUBJECT_ROOT, SUBJECT_TERMINAL, StartKey, app_flag, perm, root_bypass,
 };
 
 use crate::{
@@ -20,12 +20,27 @@ use crate::{
 };
 
 /// Most app names one daemon run can use: ids `1..=MAX_NAMES`. The ids after
-/// them are reserved: [`OWNER_UNKNOWN`], [`OWNER_PINS`], [`APP_DAEMON`] and
-/// [`APP_AGENT`].
-pub const MAX_NAMES: usize = OWNER_UNKNOWN as usize - 1;
+/// them are reserved: [`OWNER_LAUNCH`], [`OWNER_UNKNOWN`], [`OWNER_PINS`],
+/// [`APP_DAEMON`] and [`APP_AGENT`].
+pub const MAX_NAMES: usize = OWNER_LAUNCH as usize - 1;
+
+/// The files of `launch_files`, below each user's home: what a user's
+/// shell, desktop session and service manager start things from.
+pub const LAUNCH_FILES: [&str; 9] = [
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.bash_login",
+    "~/.zshrc",
+    "~/.config/fish",
+    "~/.config/autostart",
+    "~/.config/systemd/user",
+    "~/.local/share/applications",
+];
 
 /// Names no app may have: the names of the builtin ids.
-pub const RESERVED_NAMES: [&str; 9] = [
+pub const RESERVED_NAMES: [&str; 10] = [
+    "launch",
     "unconfined",
     "all",
     "terminal",
@@ -121,6 +136,7 @@ impl IdTable {
             APP_DAEMON => "explsmd",
             OWNER_PINS => "explsm-pins",
             OWNER_UNKNOWN => "unknown",
+            OWNER_LAUNCH => "launch",
             _ => self.names.get(id as usize - 1).map_or("?", String::as_str),
         }
     }
@@ -428,6 +444,9 @@ pub struct Compiled {
     /// `fail_closed on`: logins wait for explsmd at boot (see
     /// `packaging/explsm-gate.service`).
     pub fail_closed: bool,
+    /// `launch_files`: how [`LAUNCH_FILES`] are guarded, `None` for `off`.
+    /// Audit by default.
+    pub launch_files: Option<Mode>,
     /// `require_sandbox on`: explsmd refuses to start without its Landlock
     /// sandbox.
     pub require_sandbox: bool,
@@ -474,6 +493,23 @@ impl Compiled {
         self.ids
             .ids()
             .map(|id| (id, self.app(id).map_or(0, App::flags)))
+    }
+
+    /// [`LAUNCH_FILES`] as patterns, if `launch_files` is not `off`.
+    pub fn launch_paths(&self) -> Vec<PathPat> {
+        if self.launch_files.is_none() {
+            return Vec::new();
+        }
+        LAUNCH_FILES
+            .iter()
+            .map(|p| {
+                PathPat::parse(&Spanned {
+                    value: p.to_string(),
+                    span: Span::default(),
+                })
+                .expect("valid paths")
+            })
+            .collect()
     }
 
     /// Keys of the `STARTED_BY` map: every app's `started_by` subjects.
@@ -587,6 +623,8 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let mut ids = ids.clone();
     let mut root_bypass: Option<&Spanned<RootBypass>> = None;
     let mut fail_closed: Option<&Spanned<bool>> = None;
+    let mut launch_files: Option<&Spanned<String>> = None;
+    let mut launch_mode = Some(Mode::Audit);
     let mut require_sandbox: Option<&Spanned<bool>> = None;
     let mut require_dbus: Option<&Spanned<bool>> = None;
     let mut users: Option<&Spanned<Vec<Spanned<String>>>> = None;
@@ -618,6 +656,27 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     );
                 }
                 fail_closed = Some(v);
+            }
+            Item::LaunchFiles(v) => {
+                if let Some(first) = launch_files {
+                    diags.push(
+                        Diagnostic::error(v.span, "`launch_files` is set twice")
+                            .also(first.span, "first set here"),
+                    );
+                }
+                launch_files = Some(v);
+                launch_mode = match v.value.as_str() {
+                    "off" => None,
+                    "audit" => Some(Mode::Audit),
+                    "enforce" => Some(Mode::Enforce),
+                    other => {
+                        diags.push(
+                            Diagnostic::error(v.span, format!("unknown `launch_files` `{other}`"))
+                                .note("`off`, `audit` (the default) or `enforce`"),
+                        );
+                        None
+                    }
+                };
             }
             Item::RequireSandbox(v) => {
                 if let Some(first) = require_sandbox {
@@ -832,9 +891,10 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         let owner = match g.owner.value.as_str() {
             "*" => Ok(OWNER_ANY),
             "@explsm" => Ok(APP_DAEMON),
+            "@launch" => Ok(OWNER_LAUNCH),
             o if o.starts_with('@') => Err(Diagnostic::error(
                 g.owner.span,
-                "the owner of a grant must be an app, `@explsm` or `*`",
+                "the owner of a grant must be an app, `@explsm`, `@launch` or `*`",
             )),
             _ => app_id(&g.owner, &apps, "owner"),
         };
@@ -926,6 +986,7 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     Ok(Compiled {
         root_bypass: root_bypass.map_or(RootBypass::default(), |v| v.value),
         fail_closed: fail_closed.is_some_and(|v| v.value),
+        launch_files: launch_mode,
         require_sandbox: require_sandbox.is_some_and(|v| v.value),
         require_dbus: require_dbus.is_some_and(|v| v.value),
         users: users.map(|u| u.value.clone()),
@@ -1342,9 +1403,30 @@ mod tests {
         assert_eq!(grant("@nobody read to a"), ["unknown builtin `@nobody`"]);
         assert_eq!(
             grant("a read to @unconfined"),
-            ["the owner of a grant must be an app, `@explsm` or `*`"]
+            ["the owner of a grant must be an app, `@explsm`, `@launch` or `*`"]
         );
         assert_eq!(grant("a read to a"), ["a already owns its data"]);
+    }
+
+    #[test]
+    fn launch_files() {
+        let c = compiled("app a { exe \"/a\" }");
+        assert_eq!(c.launch_files, Some(Mode::Audit));
+        assert_eq!(c.launch_paths().len(), LAUNCH_FILES.len());
+        let c = compiled("launch_files enforce\napp ed { exe \"/ed\" }\ngrant ed all to @launch");
+        assert_eq!(c.launch_files, Some(Mode::Enforce));
+        let ed = c.ids.get("ed").unwrap();
+        assert!(c.grants.contains_key(&GrantKey {
+            subject: ed,
+            owner: OWNER_LAUNCH
+        }));
+        assert_eq!(c.name(OWNER_LAUNCH), "launch");
+        let c = compiled("launch_files off");
+        assert!(c.launch_paths().is_empty());
+        assert_eq!(
+            errors("launch_files sometimes"),
+            ["unknown `launch_files` `sometimes`"]
+        );
     }
 
     #[test]
@@ -1451,7 +1533,7 @@ mod tests {
         let text: String = (0..=MAX_NAMES)
             .map(|i| format!("app a{i} {{ exe \"/a\" }}\n"))
             .collect();
-        assert_eq!(errors(&text), ["too many apps: at most 251 per daemon run"]);
+        assert_eq!(errors(&text), ["too many apps: at most 250 per daemon run"]);
     }
 
     #[test]
@@ -1583,7 +1665,7 @@ mod tests {
         }
         assert_eq!(
             errors("app a { exe \"/a\" }\ngrant a read to @explsmd"),
-            ["the owner of a grant must be an app, `@explsm` or `*`"]
+            ["the owner of a grant must be an app, `@explsm`, `@launch` or `*`"]
         );
     }
 
@@ -1615,7 +1697,7 @@ mod tests {
         );
         assert_eq!(
             errors("app a { exe \"/a\" }\ngrant a read to @root"),
-            ["the owner of a grant must be an app, `@explsm` or `*`"]
+            ["the owner of a grant must be an app, `@explsm`, `@launch` or `*`"]
         );
     }
 

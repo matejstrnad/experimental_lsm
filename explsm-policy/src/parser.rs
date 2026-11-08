@@ -9,7 +9,8 @@ use crate::{
     lexer::{Tok, lex},
 };
 
-const TOP_LEVEL: [&str; 11] = [
+const TOP_LEVEL: [&str; 12] = [
+    "launch_files",
     "app",
     "grant",
     "claim",
@@ -23,8 +24,8 @@ const TOP_LEVEL: [&str; 11] = [
     "users",
 ];
 const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `shell`, `desktop`, \
-                            `root_bypass`, `fail_closed`, `require_sandbox`, `require_dbus` \
-                            or `users`";
+                            `root_bypass`, `fail_closed`, `launch_files`, `require_sandbox`, \
+                            `require_dbus` or `users`";
 const APP_BODY: [&str; 8] = [
     "exe",
     "owns",
@@ -239,6 +240,7 @@ impl Parser {
             }
             "root_bypass" => self.root_bypass().map(Item::RootBypass),
             "fail_closed" => self.on_off().map(Item::FailClosed),
+            "launch_files" => Ok(Item::LaunchFiles(self.word("`off`, `audit` or `enforce`")?)),
             "require_sandbox" => self.on_off().map(Item::RequireSandbox),
             "require_dbus" => self.on_off().map(Item::RequireDbus),
             "users" => {
@@ -506,8 +508,8 @@ mod tests {
             e,
             [
                 "expected `app`, `grant`, `claim`, `terminal`, `shell`, `desktop`, \
-                 `root_bypass`, `fail_closed`, `require_sandbox`, `require_dbus` or `users`, \
-                 found `bogus`",
+                 `root_bypass`, `fail_closed`, `launch_files`, `require_sandbox`, \
+                 `require_dbus` or `users`, found `bogus`",
                 "expected `exe`, `owns`, `mode`, `inherit`, `env`, `code`, `started_by`, \
                  `deny_args` or `}`, found `frobnicate`",
                 "grant without permissions",

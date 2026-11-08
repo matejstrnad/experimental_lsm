@@ -287,8 +287,9 @@ Lets `SUBJECT` access the data of `OWNER`. Grants for the same pair add up.
 - **PERMS**: comma-separated, from `read`, `write`, `create`, `delete`,
   `rename`, `list` (read a directory), `setattr` (mode, owner, times,
   xattrs, ACLs), or `all`. Truncation counts as `write`.
-- **OWNER**: an app, `*` for every app's data, or `@explsm` for explsm's
-  own files (see below).
+- **OWNER**: an app, `*` for every app's data, `@explsm` for explsm's
+  own files (see below), or `@launch` for the files that start programs
+  (see [`launch_files`](#launch_files-offauditenforce)).
 
 An app always has full access to its own data; granting it to itself is an
 error.
@@ -400,6 +401,33 @@ keeps `/run/nologin`: only root may log in. Fix explsmd, then `systemctl
 start systemd-user-sessions`; or boot with `explsm=off`, which skips the
 gate. It takes effect at the next boot, and stays as the last policy in
 force left it. Turn it off before disabling explsmd.
+
+### `launch_files off|audit|enforce`
+
+The files a user's shell, desktop session and service manager start
+programs from belong to explsm's `@launch` owner: `~/.bashrc`,
+`~/.bash_profile`, `~/.profile`, `~/.bash_login`, `~/.zshrc`,
+`~/.config/fish`, `~/.config/autostart`, `~/.config/systemd/user` and
+`~/.local/share/applications` (a `.desktop` file there overrides the
+system one of the same name). A program that writes one of them makes
+the user's own shell or desktop run its command, which `started_by` would
+then trust.
+
+Anyone may read them. Changing, creating in, removing or renaming them
+needs a grant to `@launch`, for the desktop's settings and the editor you
+edit them with:
+
+```
+launch_files enforce
+app editor { exe "/usr/bin/gnome-text-editor" }
+grant editor all to @launch
+```
+
+`audit` (the default) only reports the changes, so a policy can be learnt
+first; `enforce` refuses them; `off` leaves the files alone. `*` grants
+cover `@launch` too. Files that don't exist are protected once they appear
+and the daemon resolves the paths again; renaming a folder above one (say
+`~/.config`) is not refused.
 
 ### `require_sandbox on|off`
 
