@@ -190,7 +190,13 @@ sleep 0.5
 n=$(olog | grep -cE "ptrace\(read\) need=tamper target=$t\$")
 check "five environ reads by one program are logged once" "$([[ $n -eq 1 ]]; echo $?)" "n=$n $(olog | tail -5)"
 n=$(olog | grep -cE "ptrace\(attach\) need=tamper target=$t\$")
-check "attach attempts are each logged" "$([[ $n -eq 2 ]]; echo $?)" "n=$n"
+# Yama, before bpf in the LSM order, refuses attaching to a process that is
+# no descendant before explsm is asked.
+if [[ $(cat /proc/sys/kernel/yama/ptrace_scope 2> /dev/null || echo 0) -ne 0 ]]; then
+    skip "attach attempts are each logged" "Yama's ptrace_scope is not 0"
+else
+    check "attach attempts are each logged" "$([[ $n -eq 2 ]]; echo $?)" "n=$n"
+fi
 wait_out "ptrace\(read\) need=tamper target=$t repeated=4\$"
 check "the window ends with the number of repeats" $? "$(olog | tail -3)"
 kill -KILL "$t" 2> /dev/null

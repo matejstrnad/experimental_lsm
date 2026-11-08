@@ -105,6 +105,11 @@ fi
 cleanup() { [[ -n $bus_pid ]] && kill "$bus_pid" 2> /dev/null; }
 trap cleanup EXIT
 
+# Yama (before bpf in lsm=) would refuse some ptrace attempts before explsm
+# sees them; a throwaway VM can do without it.
+if [[ -w /proc/sys/kernel/yama/ptrace_scope ]]; then
+    echo 0 > /proc/sys/kernel/yama/ptrace_scope
+fi
 echo "kernel $(uname -r), LSMs $(cat /sys/kernel/security/lsm)"
 
 # --- the tests ------------------------------------------------------------------

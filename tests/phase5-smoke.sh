@@ -100,7 +100,7 @@ daemon=
 start() { # extra args
     : > "$ERR"
     "$EXPLSMD" --policy "$DIR/policy.explsm" --claims "$DIR/claims.d" --agent "$DIR/no-agent" \
-        --state-dir "$DIR/state" --pin-dir "$PIN" --daemon "$EXPLSMD" "$@" >> "$OUT" 2> "$ERR" &
+        --state-dir "$DIR/state" --pin-dir "$PIN" --daemon "$EXPLSMD" "$@" >> "$OUT" 2>> "$ERR" &
     daemon=$!
     wait_err attached || { echo "explsmd did not start:"; cat "$ERR"; exit 1; }
 }
@@ -128,6 +128,9 @@ nobody "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "baseline: nobody reads the secret with the owner's cat" $? ""
 
 start
+# Before the log is cleared for the reloads below.
+grep -q "exe $W/app-1 of upd is user-writable" "$ERR"
+writable_noticed=$?
 check "the pin directory exists" "$([[ -e $PIN/link-file_open && -e $PIN/ROOTS ]]; echo $?)" "$(ls "$PIN" 2>&1)"
 
 # --- fail_closed ----------------------------------------------------------------
@@ -196,8 +199,7 @@ cat "/proc/$tpid/environ" > /dev/null 2>&1
 check "root can (bypass on)" $? ""
 
 # --- user-writable exes -------------------------------------------------------
-grep -q "exe $W/app-1 of upd is user-writable" "$ERR"
-check "the user-writable exe is noticed" $? "$(grep -i writable "$ERR")"
+check "the user-writable exe is noticed" "$writable_noticed" "$(grep -ai writable "$ERR")"
 nobody "$W/app-1" -c 'exit 0'
 check "anyone may run it" $? ""
 nobody bash -c "echo x >> $W/app-1" 2> /dev/null
@@ -234,6 +236,7 @@ check "truncate(2) of a setgid owned file is checked" "$([[ $rc -ne 0 && -s $E/s
 
 # --- atomic save of a file root -----------------------------------------------
 J=$DIR/home/owner.json
+roots_before=$(grep -c "+ root $J " "$ERR")
 nobody cat "$J" > /dev/null 2>&1
 rc=$?
 check "the file root is protected" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
@@ -243,9 +246,9 @@ check "the app saves it by rename" $? ""
 nobody cat "$J" > /dev/null 2>&1
 rc=$?
 check "the new file is protected at once" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
-# The first `+ root` line is from the start, the second from the rescan.
-for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do [[ $(grep -c "+ root $J " "$ERR") -ge 2 ]] && break; sleep 0.1; done
-[[ $(grep -c "+ root $J " "$ERR") -ge 2 ]]
+# The rescan says so with a new `+ root` line.
+for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do [[ $(grep -c "+ root $J " "$ERR") -gt $roots_before ]] && break; sleep 0.1; done
+[[ $(grep -c "+ root $J " "$ERR") -gt $roots_before ]]
 check "the daemon takes the new file as the root" $? "$(grep owner.json "$ERR")"
 nobody cat "$J" > /dev/null 2>&1
 rc=$?
@@ -304,6 +307,11 @@ else
     stop TERM
     "$EXPLSMD" --unload --pin-dir "$PIN" --policy "$DIR/policy.explsm" 2> /dev/null
 fi
+# Sleepable programs go only after an RCU grace period on older kernels.
+for _ in $(seq $((50 * ${SMOKE_SLOW:-1}))); do
+    nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1 && break
+    sleep 0.1
+done
 nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "after unload, nothing is enforced" $? ""
 "$EXPLSMD" --check-layout --pin-dir "$PIN" 2> /dev/null
