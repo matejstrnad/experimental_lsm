@@ -19,6 +19,12 @@ fresh() {
             exit 2
         fi
     done
+    if [[ -e /sys/fs/bpf/explsm && ${SMOKE_WITH_EXPLSM:-0} != 1 ]]; then
+        echo "the installed explsm is loaded and would refuse the test daemon's" >&2
+        echo "labels; turn it off first: sudo explsmctl unload" >&2
+        echo "(or SMOKE_WITH_EXPLSM=1 to run anyway)" >&2
+        exit 2
+    fi
     echo "testing $(dirname "$1") ($(date -r "$1" '+%F %T'))"
 }
 

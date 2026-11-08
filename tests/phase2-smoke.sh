@@ -251,7 +251,13 @@ check "an unprotected file 100 levels deep is not" $? "rc=$rc $ev"
 # Beyond MAX_WALK the owner can't be told, so it is "unknown", enforced
 # because an app is, and walked again each time.
 for i in 1 2; do
-    run nobody bash -c "cd '$ABYSS' && for _ in \$(seq 4100); do cd d || exit 9; done && /usr/bin/cat file"
+    # bash's cd re-checks the whole logical path each step, which takes
+    # minutes this deep; python's chdir doesn't.
+    run nobody python3 -c 'import os,sys
+os.chdir(sys.argv[1])
+for _ in range(4100):
+    os.chdir("d")
+os.execv("/usr/bin/cat", ["cat", "file"])' "$ABYSS"
     denied && has "owner=unknown open\(r\) need=deep\(read\)"
     check "read 4100 levels deep is denied as unknown (try $i)" $? "rc=$rc $ev"
 done
