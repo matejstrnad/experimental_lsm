@@ -198,7 +198,19 @@ fn check(
     };
     for app in &policy.apps {
         let inherit = if app.inherit { ", inherit" } else { "" };
-        println!("app {} ({}{inherit})", app.name, app.mode.name());
+        let code = if app.code_any { ", code any" } else { "" };
+        println!("app {} ({}{inherit}{code})", app.name, app.mode.name());
+        if !app.started_by.is_empty() {
+            let who: Vec<_> = app
+                .started_by
+                .iter()
+                .map(|&id| explsm_policy::App::spawner_name(id, &policy.ids))
+                .collect();
+            println!("  started_by {}", who.join(", "));
+        }
+        for arg in &app.deny_args {
+            println!("  deny_args  {arg}");
+        }
         for f in resolved.exes.iter().filter(|f| f.app == app.id) {
             println!(
                 "  exe     {}  {}",
@@ -354,7 +366,17 @@ async fn status() -> Result<ExitCode> {
     println!("users       {}", s.users.join(", "));
     for app in &s.apps {
         let inherit = if app.inherit { ", inherit" } else { "" };
-        println!("\napp {} ({}{inherit}, id {})", app.name, app.mode, app.id);
+        let code = if app.code_any { ", code any" } else { "" };
+        println!(
+            "\napp {} ({}{inherit}{code}, id {})",
+            app.name, app.mode, app.id
+        );
+        if !app.started_by.is_empty() {
+            println!("  started_by {}", app.started_by.join(", "));
+        }
+        for arg in &app.deny_args {
+            println!("  deny_args  {arg}");
+        }
         for f in &app.exes {
             println!("  exe     {}  {}", f.path, f.key);
         }

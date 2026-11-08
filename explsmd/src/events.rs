@@ -12,6 +12,9 @@
 //! claim  pid=… … app=claude path=/home/me/.claude
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=LD_PRELOAD
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=userns
+//! deny   pid=… … app=ssh exe=/usr/bin/scp dropped=started_by spawner=unconfined
+//! audit  pid=… … app=ssh exe=/usr/bin/ssh dropped=deny_args spawner=unconfined(terminal)
+//! deny   pid=… … subject=ssh owner=unconfined mmap need=code /tmp/evil.so
 //! deny   pid=… … subject=unconfined owner=claude ptrace(attach) need=tamper target=4242
 //! deny   pid=… … subject=unconfined owner=claude signal(SIGSEGV) need=tamper target=4242
 //! deny   pid=… … subject=unconfined owner=claude rlimit(RLIMIT_CPU) need=tamper target=4242
@@ -36,8 +39,9 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
     ACTION_BYPASS, ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, LOGIN_UNSET, Op,
-    REASON_CROSS, REASON_DEEP, REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT,
-    TF_TERMINAL, env_var, own_kind, path_kind, perm,
+    REASON_ARGS, REASON_CODE, REASON_CROSS, REASON_DEEP, REASON_ENV, REASON_LABEL, REASON_SELF,
+    REASON_STARTED_BY, REASON_TAMPER, SUBJECT_ROOT, TF_DESKTOP, TF_SHELL, TF_TERMINAL, env_var,
+    own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
 
@@ -295,6 +299,40 @@ pub fn render(
             fields,
         };
     }
+    if ev.kind == EventKind::Exec as u32
+        && (ev.reason == REASON_STARTED_BY || ev.reason == REASON_ARGS)
+    {
+        let dropped = if ev.reason == REASON_ARGS {
+            "deny_args"
+        } else {
+            "started_by"
+        };
+        // The spawner: the identity before the exec, and what it was typed in.
+        let mut spawner = names.name(ev.owner2).to_string();
+        if ev.flags & TF_SHELL != 0 {
+            spawner.push_str("(terminal)");
+        } else if ev.flags & TF_DESKTOP != 0 {
+            spawner.push_str("(desktop)");
+        }
+        let verb = if ev.action == ACTION_DENY {
+            "deny  "
+        } else {
+            "audit "
+        };
+        fields.push(("EXPLSM_KIND", "exec".into()));
+        fields.push(("EXPLSM_ACTION", verb.trim_end().into()));
+        fields.push(("EXPLSM_PATH", path.clone()));
+        fields.push(("EXPLSM_DROPPED", dropped.into()));
+        fields.push(("EXPLSM_SPAWNER", spawner.clone()));
+        return Line {
+            text: format!(
+                "{verb} {common} app={} exe={path} dropped={dropped} spawner={spawner}",
+                names.name(ev.subject)
+            ),
+            priority: if ev.action == ACTION_DENY { 4 } else { 5 },
+            fields,
+        };
+    }
     if ev.kind == EventKind::Exec as u32 {
         fields.push(("EXPLSM_KIND", "exec".into()));
         fields.push(("EXPLSM_PATH", path.clone()));
@@ -356,6 +394,7 @@ pub fn render(
         REASON_LABEL => (names.name(ev.owner).to_string(), "label".to_string()),
         REASON_TAMPER => (names.name(ev.owner).to_string(), "tamper".to_string()),
         REASON_SELF => (names.name(ev.owner).to_string(), "self".to_string()),
+        REASON_CODE => (names.name(ev.owner).to_string(), "code".to_string()),
         // Too deep to tell whose it is.
         REASON_DEEP => (
             names.name(ev.owner).to_string(),

@@ -79,6 +79,13 @@ pub struct AppStatus {
     pub inherit: bool,
     /// `env`: loader variables that keep the identity.
     pub env: Vec<String>,
+    /// `code any`: may map any file as code.
+    pub code_any: bool,
+    /// `started_by`: who may start the app (`@terminal`, app names, …).
+    /// Empty: anyone.
+    pub started_by: Vec<String>,
+    /// `deny_args`: argument patterns that drop the identity.
+    pub deny_args: Vec<String>,
     pub exes: Vec<FileStatus>,
     pub roots: Vec<FileStatus>,
     /// Paths of the policy that match nothing yet.

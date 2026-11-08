@@ -34,12 +34,16 @@ use std::{
 use anyhow::{Context as _, Result, anyhow};
 use aya::{
     Ebpf, Pod,
-    maps::{Array, HashMap as BpfHashMap, Map, PerCpuArray},
+    maps::{
+        Array, HashMap as BpfHashMap, Map, PerCpuArray,
+        lpm_trie::{Key as TrieKey, LpmTrie},
+    },
 };
 use explsm_common::{
-    APP_AGENT, APP_DAEMON, AppId, CFG_DAEMON_TGID, CFG_GENERATION, CFG_LOG_EXECS, CFG_ROOT_BYPASS,
-    DAEMON_PATH_LEN, DaemonPath, EnvKey, FileKey, GrantKey, MODE_AUDIT, MODE_ENFORCE, OWNER_EXE,
-    OWNER_PINS, OWNER_UNKNOWN, OwnKey, STATS_LEN, TempKey, perm,
+    APP_AGENT, APP_DAEMON, AppId, ArgKey, CFG_DAEMON_TGID, CFG_GENERATION, CFG_LOG_EXECS,
+    CFG_ROOT_BYPASS, DAEMON_PATH_LEN, DaemonPath, ENV_CHUNK, EnvKey, FileKey, GrantKey, MODE_AUDIT,
+    MODE_ENFORCE, OWNER_EXE, OWNER_PINS, OWNER_UNKNOWN, OwnKey, STATS_LEN, StartKey, TempKey, perm,
+    term,
 };
 use explsm_ipc::{AppStatus, FileStatus, GrantStatus, ReloadReply, Status};
 use explsm_policy::{
@@ -144,6 +148,8 @@ struct Applied {
     modes: HashMap<AppId, u32>,
     app_flags: HashMap<AppId, u32>,
     allowed_env: HashMap<EnvKey, u32>,
+    started_by: HashMap<StartKey, u32>,
+    deny_args: HashSet<ArgKey>,
     terminals: HashMap<FileKey, u32>,
     claim_parents: HashMap<FileKey, u32>,
     exe_dirs: HashMap<FileKey, AppId>,
@@ -296,6 +302,8 @@ struct Plan {
     modes: HashMap<AppId, u32>,
     app_flags: HashMap<AppId, u32>,
     allowed_env: HashMap<EnvKey, u32>,
+    started_by: HashMap<StartKey, u32>,
+    deny_args: HashSet<ArgKey>,
     /// Exes not in the maps yet, whose running processes are seeded.
     new_exes: HashMap<FileKey, AppId>,
     new_terminals: bool,
@@ -342,10 +350,80 @@ fn restore<K: Pod, V: Pod>(ebpf: &mut Ebpf, name: &str, key: K, old: Option<V>) 
     .with_context(|| format!("restoring {name}"))
 }
 
+/// `DENY_ARGS` keys as the trie takes them: the app's bytes, then the
+/// pattern's.
+type TrieData = [u8; 4 + ENV_CHUNK];
+
+fn trie_key(k: &ArgKey) -> TrieKey<TrieData> {
+    let mut data = [0; 4 + ENV_CHUNK];
+    data[..4].copy_from_slice(&k.app.to_ne_bytes());
+    data[4..].copy_from_slice(&k.val);
+    TrieKey::new(k.prefixlen, data)
+}
+
+fn arg_key(k: &TrieKey<TrieData>) -> ArgKey {
+    let data = k.data();
+    let mut val = [0; ENV_CHUNK];
+    val.copy_from_slice(&data[4..]);
+    ArgKey {
+        prefixlen: k.prefix_len(),
+        app: AppId::from_ne_bytes(data[..4].try_into().expect("4 bytes")),
+        val,
+    }
+}
+
+fn deny_args_map(ebpf: &mut Ebpf) -> Result<LpmTrie<&mut aya::maps::MapData, TrieData, u32>> {
+    Ok(LpmTrie::try_from(
+        ebpf.map_mut("DENY_ARGS").context("DENY_ARGS missing")?,
+    )?)
+}
+
+fn read_deny_args(ebpf: &Ebpf) -> Result<HashSet<ArgKey>> {
+    let map: LpmTrie<_, TrieData, u32> =
+        LpmTrie::try_from(ebpf.map("DENY_ARGS").context("DENY_ARGS missing")?)?;
+    map.keys()
+        .map(|k| k.map(|k| arg_key(&k)))
+        .collect::<Result<_, _>>()
+        .context("reading DENY_ARGS")
+}
+
+/// Make `DENY_ARGS` hold `want`, noting each change in `undo`.
+fn sync_deny_args(
+    ebpf: &mut Ebpf,
+    want: &HashSet<ArgKey>,
+    have: &mut HashSet<ArgKey>,
+    undo: &mut Undo,
+) -> Result<()> {
+    let stale: Vec<ArgKey> = have.difference(want).copied().collect();
+    let new: Vec<ArgKey> = want.difference(have).copied().collect();
+    let mut map = deny_args_map(ebpf)?;
+    for k in stale {
+        map.remove(&trie_key(&k))
+            .context("removing from DENY_ARGS")?;
+        have.remove(&k);
+        undo.0.push(Box::new(move |ebpf: &mut Ebpf| {
+            deny_args_map(ebpf)?
+                .insert(&trie_key(&k), 1, 0)
+                .context("restoring DENY_ARGS")
+        }));
+    }
+    for k in new {
+        map.insert(&trie_key(&k), 1, 0)
+            .context("updating DENY_ARGS")?;
+        have.insert(k);
+        undo.0.push(Box::new(move |ebpf: &mut Ebpf| {
+            deny_args_map(ebpf)?
+                .remove(&trie_key(&k))
+                .context("restoring DENY_ARGS")
+        }));
+    }
+    Ok(())
+}
+
 /// Most entries the hash map `name` holds.
 fn capacity(ebpf: &Ebpf, name: &str) -> Result<usize> {
     let info = match ebpf.map(name).with_context(|| format!("{name} missing"))? {
-        Map::HashMap(m) | Map::Array(m) => m.info()?,
+        Map::HashMap(m) | Map::Array(m) | Map::LpmTrie(m) => m.info()?,
         _ => return Err(anyhow!("{name} is not a hash map or an array")),
     };
     Ok(info.max_entries() as usize)
@@ -499,6 +577,8 @@ impl State {
         self.applied.exe_paths = read_map(&self.ebpf, "EXE_PATHS")?;
         self.applied.own_ids = read_map(&self.ebpf, "OWN_IDS")?;
         self.applied.allowed_env = read_map(&self.ebpf, "ALLOWED_ENV")?;
+        self.applied.started_by = read_map(&self.ebpf, "STARTED_BY")?;
+        self.applied.deny_args = read_deny_args(&self.ebpf)?;
         let temp: HashMap<TempKey, u32> = read_map(&self.ebpf, "TEMP_GRANTS")?;
         let mut map: BpfHashMap<_, TempKey, u32> =
             BpfHashMap::try_from(self.ebpf.map_mut("TEMP_GRANTS").context("TEMP_GRANTS")?)?;
@@ -947,11 +1027,15 @@ impl State {
         modes.insert(APP_AGENT, MODE_ENFORCE);
         modes.insert(APP_DAEMON, MODE_ENFORCE);
         modes.insert(OWNER_PINS, MODE_ENFORCE);
-        let terminals: HashMap<FileKey, u32> =
-            self.resolved.terminals.iter().map(|f| (f.key, 1)).collect();
+        let terminals: HashMap<FileKey, u32> = self
+            .resolved
+            .terminals
+            .iter()
+            .map(|f| (f.key, f.term))
+            .collect();
         let new_terminals = terminals
-            .keys()
-            .any(|k| !self.applied.terminals.contains_key(k));
+            .iter()
+            .any(|(k, v)| v & term::TERMINAL != 0 && !self.applied.terminals.contains_key(k));
         let claim_parents_by_key: HashMap<FileKey, (u32, PathBuf)> = self
             .users
             .iter()
@@ -996,6 +1080,8 @@ impl State {
             modes,
             app_flags: policy.app_flags().collect(),
             allowed_env: policy.allowed_env().map(|k| (k, 1)).collect(),
+            started_by: policy.started_by().map(|k| (k, 1)).collect(),
+            deny_args: policy.deny_args().collect(),
             new_exes,
             new_terminals,
             linked,
@@ -1022,7 +1108,13 @@ impl State {
                 "protected roots, hard-linked files and own files",
             ),
             ("GRANTS", policy.grants.len(), "grants"),
-            ("TERMINALS", plan.terminals.len(), "terminal exes"),
+            (
+                "TERMINALS",
+                plan.terminals.len(),
+                "terminal, shell and desktop exes",
+            ),
+            ("STARTED_BY", plan.started_by.len(), "`started_by` subjects"),
+            ("DENY_ARGS", plan.deny_args.len(), "`deny_args` patterns"),
             (
                 "CLAIM_PARENTS",
                 plan.claim_parents.len(),
@@ -1135,6 +1227,14 @@ impl State {
             &mut a.allowed_env,
             undo,
         )?;
+        sync_map(
+            ebpf,
+            "STARTED_BY",
+            &plan.started_by,
+            &mut a.started_by,
+            undo,
+        )?;
+        sync_deny_args(ebpf, &plan.deny_args, &mut a.deny_args, undo)?;
         if roots_changed {
             // Cached owners were computed against the old roots. Racing
             // with a bump from BPF is fine: both only increment.
@@ -1146,7 +1246,13 @@ impl State {
     /// Give running processes below a terminal the terminal flag.
     pub fn seed_terminals(&self) -> Result<()> {
         let tasks = self.tasks()?;
-        let terminals: HashSet<FileKey> = self.applied.terminals.keys().copied().collect();
+        let terminals: HashSet<FileKey> = self
+            .applied
+            .terminals
+            .iter()
+            .filter(|(_, v)| *v & term::TERMINAL != 0)
+            .map(|(k, _)| *k)
+            .collect();
         if terminals.is_empty() {
             return Ok(());
         }
@@ -1371,6 +1477,13 @@ impl State {
                     mode: app.mode.name().into(),
                     inherit: app.inherit,
                     env: app.env.clone(),
+                    code_any: app.code_any,
+                    started_by: app
+                        .started_by
+                        .iter()
+                        .map(|&id| explsm_policy::App::spawner_name(id, &self.policy.ids))
+                        .collect(),
+                    deny_args: app.deny_args.clone(),
                     exes,
                     roots,
                     missing,
