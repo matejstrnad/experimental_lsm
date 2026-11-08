@@ -76,6 +76,17 @@
 #define EACCES 13
 #define EXDEV 18
 
+/* An error to return, hidden from the optimiser: with EPERM (1) clang turns
+ * `deny ? -EPERM : 0` into -(deny & 1), which the verifier of 6.15 and
+ * later can't bound, and it refuses an LSM program whose return value may
+ * be outside [-4095, 0]. */
+#define ERR(e)                                                                 \
+	({                                                                     \
+		int __err = -(e);                                              \
+		asm volatile("" : "+r"(__err));                                \
+		__err;                                                         \
+	})
+
 #define S_IFMT 0170000
 #define S_IFDIR 0040000
 
@@ -664,11 +675,12 @@ static __always_inline u32 action_for(app_id owner, u32 lacking)
 }
 
 /* Count a reported operation and return the hook result: err if denied. */
+/* The result of a check: -err if action is a denial. */
 static __always_inline int outcome(u32 action, int err)
 {
 	if (action == ACTION_DENY) {
 		bump(STAT_DENIED);
-		return err;
+		return ERR(err);
 	}
 	bump(action == ACTION_BYPASS ? STAT_BYPASSED : STAT_AUDITED);
 	return 0;
@@ -766,7 +778,7 @@ static __always_inline int refuse(u32 op, app_id subject, app_id owner,
 			name_chain(&ev->path2, d2);
 		bpf_ringbuf_submit(ev, 0);
 	}
-	return outcome(action, -EACCES);
+	return outcome(action, EACCES);
 }
 
 /* Check perms on the object at d, whose owner is owner. */
@@ -799,7 +811,7 @@ static __always_inline int cross(u32 op, app_id from, app_id to,
 	}
 	if (deny) {
 		bump(STAT_DENIED);
-		return -EXDEV;
+		return ERR(EXDEV);
 	}
 	/* Audit mode lets ownership change under cached entries. */
 	bump(STAT_AUDITED);
@@ -831,7 +843,7 @@ static __always_inline int tamper(u32 op, app_id subject, app_id owner,
 	}
 	bump(STAT_TAMPER);
 	if (deny)
-		return -EPERM;
+		return ERR(EPERM);
 	if (bypassed)
 		bump(STAT_BYPASSED);
 	return 0;
@@ -1297,7 +1309,7 @@ static __attribute__((noinline)) int code_check(u32 op, u64 fp)
 	}
 	if (deny) {
 		bump(STAT_DENIED);
-		return -EACCES;
+		return ERR(EACCES);
 	}
 	bump(STAT_AUDITED);
 	return 0;
@@ -1377,7 +1389,7 @@ int LSM_PROG(file_open, struct file *file, int retval)
 		ev->path.len = bpf_d_path(&file->f_path, ev->path.buf, PATH_LEN);
 		bpf_ringbuf_submit(ev, 0);
 	}
-	return outcome(action, -EACCES);
+	return outcome(action, EACCES);
 }
 
 /* Creating d in directory dir. */
@@ -1614,7 +1626,7 @@ static __always_inline int on_xattr(u32 op, struct dentry *d, const char *name)
 		bpf_ringbuf_submit(ev, 0);
 	}
 	bump(STAT_DENIED);
-	return -EPERM;
+	return ERR(EPERM);
 }
 
 SEC("lsm/inode_setxattr")
@@ -1798,7 +1810,7 @@ static __always_inline int own_object(u32 kind, u32 id)
 		bpf_ringbuf_submit(ev, 0);
 	}
 	bump(STAT_DENIED);
-	return -EPERM;
+	return ERR(EPERM);
 }
 
 /* A new fd for a map (by id, from a pin, or created). */
