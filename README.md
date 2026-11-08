@@ -127,6 +127,7 @@ sudo explsmctl load                   # apply edits to /etc/explsm/policy.d (or:
 explsmctl log --app ssh --since today # denied (`deny`) and allowed-in-audit-mode (`audit`) accesses
 explsmctl log --deny -f               # follow denials
 explsmctl learn ssh --since "1 week ago"  # suggested grants from the log
+explsmctl learn @root --since "1 week ago"  # @root grants, before root_bypass off
 ```
 
 `status` and `load` talk to explsmd over D-Bus and need root. `log` and

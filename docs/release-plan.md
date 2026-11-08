@@ -200,7 +200,11 @@ Server behaviour:
 
 ## 8. Resistance to root
 
-Plan only; nothing here is implemented yet.
+Stage 1 is implemented, with `root_bypass audit` as the default rather than
+`off` (the first open question below, answered with stage 1.5 for now), and
+`@explsm` grants for dpkg shipped as an example
+(`/usr/share/doc/explsm/examples/dpkg.explsm`), not in `policy.d`. Stages 2
+and 3 are plans.
 
 ### Where it stands
 

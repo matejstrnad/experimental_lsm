@@ -236,6 +236,8 @@ EOF
         sleep 0.1
     done
     nobody /usr/bin/cat "$A/file" > /dev/null
+    # Root, in the default root_bypass audit: a bypass line.
+    /usr/bin/cat "$A/file" > /dev/null
     sleep 1
     systemctl stop "$unit"
     out=$("$CTL" log --app auditee --since "5 min ago" 2>&1)
@@ -244,6 +246,12 @@ EOF
     out=$("$CTL" learn auditee --since "5 min ago" 2>&1)
     grep -q "# grant @unconfined read to auditee" <<< "$out" && grep -q "from cat" <<< "$out"
     check "explsmctl learn suggests the grant" $? "$out"
+    out=$("$CTL" log --bypass --since "5 min ago" 2>&1)
+    grep -qE "bypass .*subject=root owner=auditee open\(r\) need=read $A/file" <<< "$out"
+    check "explsmctl log --bypass finds root's access" $? "$out"
+    out=$("$CTL" learn @root --since "5 min ago" 2>&1)
+    grep -q "^grant @root read to auditee " <<< "$out" && grep -q "from cat" <<< "$out"
+    check "explsmctl learn @root suggests the @root grant" $? "$out"
 else
     skip "journal" "systemd-run is not available"
 fi

@@ -1,5 +1,7 @@
 //! `explsmctl learn`: turn logged accesses into suggested grants, in the
-//! style of `aa-logprof`.
+//! style of `aa-logprof`: those to an app's data ([`suggest`]), or those of
+//! root processes that are no app ([`suggest_root`], `learn @root`), from
+//! `bypass` lines of `root_bypass audit` as much as `deny` and `audit` ones.
 
 use std::collections::BTreeMap;
 
@@ -9,9 +11,13 @@ use explsm_common::perm;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub subject: String,
+    /// Empty if not logged.
+    pub owner: String,
     pub need: String,
     pub proc: String,
     pub path: String,
+    /// From below a terminal (`EXPLSM_TERMINAL`).
+    pub terminal: bool,
 }
 
 /// Records from `journalctl -o json` output, one object per line. Fields
@@ -24,9 +30,11 @@ pub fn parse(json_lines: &str) -> Vec<Record> {
             let field = |k: &str| v.get(k).and_then(|f| f.as_str()).map(str::to_string);
             Some(Record {
                 subject: field("EXPLSM_SUBJECT")?,
+                owner: field("EXPLSM_OWNER").unwrap_or_default(),
                 need: field("EXPLSM_NEED")?,
                 proc: field("EXPLSM_PROC").unwrap_or_default(),
                 path: field("EXPLSM_PATH").unwrap_or_default(),
+                terminal: field("EXPLSM_TERMINAL").is_some_and(|t| t == "1"),
             })
         })
         .collect()
@@ -38,6 +46,82 @@ struct Seen {
     events: usize,
     example: String,
     procs: BTreeMap<String, usize>,
+    /// Events from below a terminal.
+    terminal: usize,
+}
+
+impl Seen {
+    /// What the events were, for the comment of a suggestion.
+    fn comment(&self) -> String {
+        let procs: Vec<_> = self
+            .procs
+            .iter()
+            .map(|(p, n)| format!("{p} ({n})"))
+            .collect();
+        let terminal = if self.terminal > 0 {
+            format!("; {} from a terminal", self.terminal)
+        } else {
+            String::new()
+        };
+        format!(
+            "{} event{}, e.g. {}; from {}{terminal}",
+            self.events,
+            plural(self.events),
+            self.example,
+            procs.join(", ")
+        )
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Grantable records by `key`, and the others counted per kind.
+type Tally<'a> = (BTreeMap<&'a str, Seen>, BTreeMap<(&'static str, &'static str), usize>);
+
+fn tally<'a>(records: &'a [Record], key: impl Fn(&'a Record) -> &'a str) -> Tally<'a> {
+    let mut by_key: BTreeMap<&str, Seen> = BTreeMap::new();
+    let mut skipped = BTreeMap::new();
+    for r in records {
+        let bits = r
+            .need
+            .split(',')
+            .filter_map(|n| perm::NAMES.iter().find(|(_, name)| *name == n.trim()))
+            .fold(0, |acc, (bit, _)| acc | bit);
+        if bits == 0 {
+            *skipped.entry(ungrantable(r.need.trim())).or_default() += 1;
+            continue;
+        }
+        let seen = by_key.entry(key(r)).or_default();
+        seen.perms |= bits;
+        seen.events += 1;
+        if seen.example.is_empty() {
+            seen.example = r.path.clone();
+        }
+        *seen.procs.entry(r.proc.clone()).or_default() += 1;
+        seen.terminal += usize::from(r.terminal);
+    }
+    (by_key, skipped)
+}
+
+/// The comments that count what can't be granted.
+fn skipped_lines(skipped: &BTreeMap<(&str, &str), usize>) -> String {
+    skipped
+        .iter()
+        .map(|((kind, what), n)| format!("# {n} {kind} event{} can't be granted ({what})\n", plural(*n)))
+        .collect()
+}
+
+/// The comment for accesses of builtin subjects to explsm's own files.
+fn own_files_comment(subject: &str, seen: &Seen) -> String {
+    format!(
+        "# {subject} processes needed {} on explsm's own files ({})\n\
+         # only an app can be granted @explsm: define one for the program \
+         (see examples/dpkg.explsm)\n",
+        perm_list(seen.perms),
+        seen.comment(),
+    )
 }
 
 fn perm_list(bits: u32) -> String {
@@ -74,53 +158,16 @@ fn ungrantable(need: &str) -> (&'static str, &'static str) {
 /// counted, per kind. Unconfined accessors only get comments: `@unconfined`
 /// means every process without an app, which is rarely what is wanted.
 pub fn suggest(app: &str, records: &[Record]) -> String {
-    let mut by_subject: BTreeMap<&str, Seen> = BTreeMap::new();
-    let mut skipped: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-    for r in records {
-        let bits = r
-            .need
-            .split(',')
-            .filter_map(|n| perm::NAMES.iter().find(|(_, name)| *name == n.trim()))
-            .fold(0, |acc, (bit, _)| acc | bit);
-        if bits == 0 {
-            *skipped.entry(ungrantable(r.need.trim())).or_default() += 1;
-            continue;
-        }
-        let seen = by_subject.entry(&r.subject).or_default();
-        seen.perms |= bits;
-        seen.events += 1;
-        if seen.example.is_empty() {
-            seen.example = r.path.clone();
-        }
-        *seen.procs.entry(r.proc.clone()).or_default() += 1;
-    }
-
+    let (by_subject, skipped) = tally(records, |r| r.subject.as_str());
     let mut out = String::new();
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
     for (subject, seen) in &by_subject {
-        let procs: Vec<_> = seen
-            .procs
-            .iter()
-            .map(|(p, n)| format!("{p} ({n})"))
-            .collect();
-        let comment = format!(
-            "{} event{}, e.g. {}; from {}",
-            seen.events,
-            plural(seen.events),
-            seen.example,
-            procs.join(", ")
-        );
+        let comment = seen.comment();
         // explsm's own files (owner explsmd) are granted as `@explsm`, and
         // only to apps.
         let own = app == "explsmd";
         let target = if own { "@explsm" } else { app };
         if own && matches!(*subject, "unconfined" | "root") {
-            out.push_str(&format!(
-                "# {subject} processes needed {} on explsm's own files ({comment})\n\
-                 # only an app can be granted @explsm: define one for the program \
-                 (see examples/dpkg.explsm)\n",
-                perm_list(seen.perms),
-            ));
+            out.push_str(&own_files_comment(subject, seen));
         } else if *subject == "unconfined" {
             out.push_str(&format!(
                 "# unconfined processes needed {} ({comment})\n\
@@ -138,12 +185,31 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
             ));
         }
     }
-    for ((kind, what), n) in skipped {
-        out.push_str(&format!(
-            "# {n} {kind} event{} can't be granted ({what})\n",
-            plural(n)
-        ));
+    out.push_str(&skipped_lines(&skipped));
+    out
+}
+
+/// Suggested `@root` grants for the accesses of root processes that are no
+/// app (`subject=root`), one per owner. With `root_bypass audit` these are
+/// the `bypass` lines: what root would lose with `root_bypass off`.
+/// explsm's own files, tampering with apps' processes and the other kinds
+/// `suggest` skips can't be granted to `@root`; they are only counted.
+pub fn suggest_root(records: &[Record]) -> String {
+    let root: Vec<_> = records.iter().filter(|r| r.subject == "root").cloned().collect();
+    let (by_owner, skipped) = tally(&root, |r| r.owner.as_str());
+    let mut out = String::new();
+    for (owner, seen) in &by_owner {
+        if *owner == "explsmd" {
+            out.push_str(&own_files_comment("root", seen));
+        } else {
+            out.push_str(&format!(
+                "grant @root {} to {owner}    # {}\n",
+                perm_list(seen.perms).replace(' ', ""),
+                seen.comment()
+            ));
+        }
     }
+    out.push_str(&skipped_lines(&skipped));
     out
 }
 
@@ -154,9 +220,19 @@ mod tests {
     fn rec(subject: &str, need: &str, proc: &str, path: &str) -> Record {
         Record {
             subject: subject.into(),
+            owner: String::new(),
             need: need.into(),
             proc: proc.into(),
             path: path.into(),
+            terminal: false,
+        }
+    }
+
+    fn root(owner: &str, need: &str, proc: &str, path: &str, terminal: bool) -> Record {
+        Record {
+            owner: owner.into(),
+            terminal,
+            ..rec("root", need, proc, path)
         }
     }
 
@@ -167,6 +243,41 @@ mod tests {
 not json
 {"EXPLSM_SUBJECT":"unconfined","EXPLSM_NEED":[1,2],"EXPLSM_PROC":"cat"}"#;
         assert_eq!(parse(json), [rec("backup", "read", "restic", "/h/.ssh/config")]);
+
+        let json = r#"{"EXPLSM_ACTION":"bypass","EXPLSM_SUBJECT":"root","EXPLSM_OWNER":"ssh","EXPLSM_NEED":"read","EXPLSM_PROC":"cat","EXPLSM_PATH":"/h/.ssh/id","EXPLSM_TERMINAL":"1"}"#;
+        assert_eq!(parse(json), [root("ssh", "read", "cat", "/h/.ssh/id", true)]);
+    }
+
+    #[test]
+    fn suggests_root_grants() {
+        let records = [
+            root("ssh", "list", "updatedb", "/h/.ssh", false),
+            root("ssh", "read", "cat", "/h/.ssh/config", true),
+            root("claude", "list", "updatedb", "/h/.claude", false),
+            root("claude", "tamper", "gdb", "target=42", true),
+            root("explsmd", "write", "vim", "/etc/explsm/policy.d/a.explsm", true),
+            // Not @root's: an app's root process, and a user's.
+            Record {
+                owner: "ssh".into(),
+                ..rec("backup", "read", "restic", "/h/.ssh/id")
+            },
+            Record {
+                owner: "ssh".into(),
+                ..rec("unconfined", "read", "cat", "/h/.ssh/id")
+            },
+        ];
+        assert_eq!(
+            suggest_root(&records),
+            "grant @root list to claude    # 1 event, e.g. /h/.claude; from updatedb (1)\n\
+             # root processes needed write on explsm's own files (1 event, e.g. \
+             /etc/explsm/policy.d/a.explsm; from vim (1); 1 from a terminal)\n\
+             # only an app can be granted @explsm: define one for the program \
+             (see examples/dpkg.explsm)\n\
+             grant @root read,list to ssh    # 2 events, e.g. /h/.ssh; from cat (1), updatedb (1); \
+             1 from a terminal\n\
+             # 1 tamper event can't be granted (ptrace, signal, rlimit or exe dir of the app's processes)\n"
+        );
+        assert_eq!(suggest_root(&records[5..]), "");
     }
 
     #[test]

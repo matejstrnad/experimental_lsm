@@ -84,8 +84,11 @@ enum Cmd {
         #[arg(short = 'n', long)]
         lines: Option<u32>,
     },
-    /// Suggest grants from the logged accesses to an app's data.
+    /// Suggest grants from the logged accesses to an app's data, or (with
+    /// `@root`) from those of root processes that are no app, e.g. the
+    /// `bypass` lines of `root_bypass audit`.
     Learn {
+        /// An app, or `@root`.
         app: String,
         /// Passed to journalctl, e.g. "1 week ago".
         #[arg(long)]
@@ -418,10 +421,12 @@ fn log(
 }
 
 fn learn(app: &str, since: Option<String>) -> Result<ExitCode> {
-    let out = journalctl(Some(app), since.as_deref())
-        .args(["-o", "json"])
-        .output()
-        .context("running journalctl")?;
+    let root = app == "@root";
+    let mut cmd = journalctl((!root).then_some(app), since.as_deref());
+    if root {
+        cmd.arg("EXPLSM_SUBJECT=root");
+    }
+    let out = cmd.args(["-o", "json"]).output().context("running journalctl")?;
     if !out.status.success() {
         bail!(
             "journalctl failed: {}",
@@ -430,9 +435,17 @@ fn learn(app: &str, since: Option<String>) -> Result<ExitCode> {
     }
     let records = learn::parse(&String::from_utf8_lossy(&out.stdout));
     if records.is_empty() {
-        eprintln!("explsmctl: no logged accesses to data of {app}");
+        if root {
+            eprintln!("explsmctl: no logged accesses of root processes that are no app");
+        } else {
+            eprintln!("explsmctl: no logged accesses to data of {app}");
+        }
         return Ok(ExitCode::SUCCESS);
     }
-    print!("{}", learn::suggest(app, &records));
+    if root {
+        print!("{}", learn::suggest_root(&records));
+    } else {
+        print!("{}", learn::suggest(app, &records));
+    }
     Ok(ExitCode::SUCCESS)
 }
