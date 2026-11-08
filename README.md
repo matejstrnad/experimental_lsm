@@ -102,8 +102,12 @@ score of -1000. It does not run realtime: the decisions are made by the BPF
 programs in the kernel, the daemon only reads their events, asks the agents
 and follows package updates.
 
-Upgrading or removing the package turns explsm off first (`explsmctl
-unload` in `prerm`), so it is off for the few seconds dpkg takes. `apt purge`
+Removing the package turns explsm off first (`explsmctl unload` in
+`prerm`). Upgrading it only stops explsmd: the pinned programs go on
+enforcing while dpkg replaces the files, and the new explsmd takes them over
+if its map layout is the same (`explsmd --check-layout`); if it is not, or
+with `root_bypass off` (dpkg could not replace explsm's files), explsm is
+unloaded and off for the few seconds dpkg takes. `apt purge`
 also removes `/var/lib/explsm` and `/etc/explsm/claims.d`; your policy files
 stay.
 
@@ -188,8 +192,9 @@ prompts or reloads), and the next explsmd takes over.
 - `sudo systemctl disable explsmd` to keep it off after the next boot
   (`fail_closed off` first, or only root can log in).
 
-**Upgrading explsmd:** the package unloads explsm before an upgrade and
-starts the new version after it. By hand: install the new binary at the same
+**Upgrading explsmd:** the package lets the new version take over the
+pinned state when the map layout is unchanged, and unloads explsm first
+when it changed (see Installing). By hand: install the new binary at the same
 path. A running daemon notices it and lets it in; a new binary at another
 path is refused the pinned state, so `explsmctl unload` first (or reboot).
 

@@ -4,7 +4,7 @@
 # the directories above them, atomic saves of an owned file, forced truncates,
 # pinning (explsm stays loaded when the daemon exits, the next one takes
 # over, a start that fails leaves the earlier pins or none, unload removes
-# it), the fail_closed note, the bpf() restrictions and explsm's own files.
+# it, --check-layout), the fail_closed note, the bpf() restrictions and explsm's own files.
 #
 # Runs explsmd from a copy in a throwaway sandbox in /var/tmp, pinned in
 # /sys/fs/bpf/explsm-smoke5 (not the real pin directory). Must run as root;
@@ -260,6 +260,12 @@ rc=$?
 check "with no daemon, enforcement goes on" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"
 nobody "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "… and apps started meanwhile keep their identity" $? ""
+# What postinst asks before letting the new explsmd take over an upgrade.
+"$EXPLSMD" --check-layout --pin-dir "$PIN" 2> "$DIR/layout.log"
+rc=$?
+check "--check-layout: the pinned maps are of this build's layout" \
+    "$([[ $rc -eq 0 ]] && grep -q "can take them over" "$DIR/layout.log"; echo $?)" \
+    "rc=$rc $(cat "$DIR/layout.log")"
 fail_start "$DIR/broken.explsm"
 check "a start with a broken policy fails" $? "$(tail -3 "$ERR")"
 nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1
@@ -286,6 +292,8 @@ else
 fi
 nobody env LD_PRELOAD=/x.so "$OB/cat" "$E/secret" > /dev/null 2>&1
 check "after unload, nothing is enforced" $? ""
+"$EXPLSMD" --check-layout --pin-dir "$PIN" 2> /dev/null
+check "--check-layout with nothing pinned says go ahead" $? ""
 fail_start "$DIR/broken.explsm"
 check "a first start that fails pins nothing" "$([[ $? -eq 0 && ! -e $PIN ]]; echo $?)" \
     "$(ls "$PIN" 2>&1) $(tail -3 "$ERR")"

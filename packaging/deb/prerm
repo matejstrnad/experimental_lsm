@@ -1,19 +1,44 @@
 #!/bin/sh
-# explsm prerm: turn explsm off before its files are replaced or removed.
-# Unloading drops the pins and labels and stops explsmd, so dpkg may change
-# explsm's own files even with `root_bypass off`, and a new version starts
-# from scratch (it may use another map layout). explsm is off for the few
-# seconds an upgrade takes.
+# explsm prerm: before explsm's files are replaced or removed.
+#
+# remove, deconfigure: turn explsm off. Unloading drops the pins and labels
+# and stops explsmd, so dpkg may change explsm's own files even with
+# `root_bypass off`.
+#
+# upgrade: only stop explsmd. The pinned programs go on enforcing while dpkg
+# replaces the files, which root may with the bypass on, and postinst lets
+# the new explsmd take over if its map layout is the same (otherwise it
+# unloads then). With the bypass off, or no daemon to ask, explsm is
+# unloaded as for a removal and is off for the few seconds an upgrade takes.
 set -e
 
-case "$1" in
-remove|upgrade|deconfigure)
-    if [ -x /usr/bin/explsmctl ]; then
-        explsmctl unload || true
+# Through the daemon, or, with none running, by the installed explsmd.
+unload() {
+    if [ -x /usr/bin/explsmctl ] && explsmctl unload; then
+        return 0
     fi
+    if [ -x /usr/sbin/explsmd ] && [ -e /sys/fs/bpf/explsm ]; then
+        /usr/sbin/explsmd --unload || true
+    fi
+}
+
+stop() {
     if [ -d /run/systemd/system ]; then
         systemctl stop explsmd.service >/dev/null 2>&1 || true
     fi
+}
+
+case "$1" in
+upgrade|failed-upgrade)
+    if ! { [ -x /usr/bin/explsmctl ] &&
+        explsmctl status 2>/dev/null | grep -q '^root bypass on'; }; then
+        unload
+    fi
+    stop
+    ;;
+remove|deconfigure)
+    unload
+    stop
     if [ "$1" = remove ]; then
         systemctl disable explsmd.service >/dev/null 2>&1 || true
         systemctl --global disable explsm-agent.service >/dev/null 2>&1 || true

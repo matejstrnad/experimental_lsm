@@ -47,7 +47,7 @@ use std::{collections::HashMap, fs, path::PathBuf, pin::pin, ptr, time::Duration
 use anyhow::{Context as _, Result, bail};
 use aya::{
     Btf, Ebpf, EbpfLoader,
-    maps::{Array, RingBuf},
+    maps::{Array, Map, MapData, RingBuf},
     programs::{Lsm, ProgramError, links::FdLink},
 };
 use clap::Parser;
@@ -129,6 +129,11 @@ struct Cli {
     /// `explsmctl unload` asks a running daemon instead.
     #[arg(long)]
     unload: bool,
+    /// Exit 0 if nothing is pinned or the pinned maps are of this build's
+    /// layout, so this explsmd can take them over; 1 if not, or if it can't
+    /// tell. For package upgrades.
+    #[arg(long)]
+    check_layout: bool,
 }
 
 /// Keep the useful end of a verifier log instead of thousands of lines.
@@ -205,6 +210,31 @@ fn check_layout(ebpf: &mut Ebpf, dir: &std::path::Path) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+/// `--check-layout`: whether this build may take over what is pinned.
+fn check_pinned_layout(cli: &Cli) -> Result<bool> {
+    let path = cli.pin_dir.join("CONFIG");
+    if !path.exists() {
+        eprintln!("explsmd: nothing pinned in {}", cli.pin_dir.display());
+        return Ok(true);
+    }
+    let map = MapData::from_pin(&path).with_context(|| {
+        format!(
+            "opening {} (only the installed explsmd may)",
+            path.display()
+        )
+    })?;
+    let config: Array<_, u32> = Array::try_from(Map::Array(map))?;
+    let pinned = config.get(&CFG_LAYOUT, 0)?;
+    let same = pinned == LAYOUT_VERSION;
+    eprintln!(
+        "explsmd: the maps pinned in {} are of layout {pinned:#010x}, this is \
+         {LAYOUT_VERSION:#010x}: {}",
+        cli.pin_dir.display(),
+        if same { "it can take them over" } else { "unload first" }
+    );
+    Ok(same)
 }
 
 /// `--unload` with no daemon running: take the labels off the policy's
@@ -394,6 +424,13 @@ async fn main() -> Result<()> {
     }
     if cli.unload {
         return unload_standalone(&cli);
+    }
+    if cli.check_layout {
+        let same = check_pinned_layout(&cli).unwrap_or_else(|e| {
+            eprintln!("explsmd: can't tell the pinned layout: {e:#}");
+            false
+        });
+        std::process::exit(if same { 0 } else { 1 });
     }
     let lsms = fs::read_to_string("/sys/kernel/security/lsm")?;
     if !lsms.split(',').any(|s| s.trim() == "bpf") {
