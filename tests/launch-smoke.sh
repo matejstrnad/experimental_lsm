@@ -104,63 +104,66 @@ grep -q attached "$ERR" || { echo "explsmd did not start:"; cat "$ERR"; exit 1; 
 grep -E 'warning' "$ERR"
 
 # The app reads its own data with a builtin, so the reading process is the
-# app exe itself.
-read_as() { echo "read -r l < '$2/file' && echo \$l"; }
+# app exe itself. Scripts, so the commands survive any nesting of -c.
+for d in "$E" "$A" "$G"; do
+    printf 'read -r l < %q && echo "$l"\n' "$d/file" > "$d.sh"
+    chmod a+r "$d.sh"
+done
 
 # --- started_by -----------------------------------------------------------------
 step "started_by"
-run nobody "$B/term" -c "$B/sh -c \"$B/keyed -c \\\"$(read_as keyed "$E")\\\"\""
+run nobody "$B/term" -c "$B/sh -c '$B/keyed $E.sh'"
 [[ $rc -eq 0 && $out == s3cret ]]
 check "typed in a shell below a terminal: the app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/term" -c "$B/interp -c \"$B/keyed -c \\\"$(read_as keyed "$E")\\\"\""
+run nobody "$B/term" -c "$B/interp -c '$B/keyed $E.sh'"
 [[ $rc -ne 0 ]] && has "deny .* app=keyed exe=$B/keyed dropped=started_by spawner=unconfined$"
 check "started by a non-shell below a terminal: no app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/keyed" -c "$(read_as keyed "$E")"
+run nobody "$B/keyed" "$E.sh"
 [[ $rc -ne 0 ]] && has "dropped=started_by spawner=unconfined$"
 check "started by an unconfined process: no app" $? "rc=$rc out=$out $ev"
 
 # Forked twice, so its parent is gone when it execs: the spawner still is
 # what forked it, not what it was re-parented to.
 m=$(mark)
-nobody "$B/interp" -c "( ( sleep 0.5; $B/keyed -c \"$(read_as keyed "$E")\" > $DIR/orphan.out 2>&1 ) & ) ; exit 0"
+nobody "$B/interp" -c "( ( sleep 0.5; $B/keyed $E.sh > $DIR/orphan.out 2>&1 ) & ) ; exit 0"
 sleep $((2 * ${SMOKE_SLOW:-1}))
 ev=$(since "$m")
 ! grep -q s3cret "$DIR/orphan.out" && has "dropped=started_by"
 check "an orphan of an untrusted process: no app" $? "$(cat "$DIR/orphan.out") $ev"
 
-run nobody "$B/desk" -c "$B/keyed -c \"$(read_as keyed "$E")\""
+run nobody "$B/desk" -c "$B/keyed $E.sh"
 [[ $rc -eq 0 && $out == s3cret ]]
 check "started by the desktop: the app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/desk" -c "$B/interp -c \"$B/keyed -c \\\"$(read_as keyed "$E")\\\"\""
+run nobody "$B/desk" -c "$B/interp -c '$B/keyed $E.sh'"
 [[ $rc -ne 0 ]] && has "dropped=started_by"
 check "started by what the desktop started: no app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/helper" -c "$B/keyed -c \"$(read_as keyed "$E")\""
+run nobody "$B/helper" -c "$B/keyed $E.sh"
 [[ $rc -eq 0 && $out == s3cret ]]
 check "started by an app it names: the app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/watched" -c "$(read_as watched "$A")"
+run nobody "$B/watched" "$A.sh"
 [[ $rc -eq 0 && $out == s3cret ]] && has "audit .* app=watched exe=$B/watched dropped=started_by"
 check "audit mode: reported, the identity kept" $? "rc=$rc out=$out $ev"
 
 # --- deny_args ------------------------------------------------------------------
 step "deny_args"
-run nobody "$B/argy" -c "$(read_as argy "$G")"
+run nobody "$B/argy" "$G.sh"
 [[ $rc -eq 0 && $out == s3cret ]]
 check "without a denied argument: the app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/argy" -O extglob -c "$(read_as argy "$G")"
+run nobody "$B/argy" -O extglob "$G.sh"
 [[ $rc -ne 0 ]] && has "deny .* app=argy exe=$B/argy dropped=deny_args"
 check "an exact denied argument: no app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/argy" --debugger -c "$(read_as argy "$G")"
+run nobody "$B/argy" --debugger "$G.sh"
 [[ $rc -ne 0 ]] && has "dropped=deny_args"
 check "an argument with a denied prefix: no app" $? "rc=$rc out=$out $ev"
 
-run nobody "$B/argy" -c "$(read_as argy "$G") # -O"
+run nobody "$B/argy" "$G.sh" "x -O"
 [[ $rc -eq 0 && $out == s3cret ]]
 check "a denied argument inside another one: the app" $? "rc=$rc out=$out $ev"
 
