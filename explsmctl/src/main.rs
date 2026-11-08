@@ -143,14 +143,24 @@ fn check(
     let sources = Sources::load_with_claims(path, claims)
         .with_context(|| format!("reading {}", path.display()))?;
     if sources.0.is_empty() {
-        eprintln!("explsmctl: warning: no *.{} files in {}", explsm_policy::EXTENSION, path.display());
+        eprintln!(
+            "explsmctl: warning: no *.{} files in {}",
+            explsm_policy::EXTENSION,
+            path.display()
+        );
     }
     let policy = match explsm_policy::check(&sources, &IdTable::default()) {
         Ok(p) => p,
         Err(d) => {
-            eprint!("{}", diag::render(&d, &sources, std::io::stderr().is_terminal()));
+            eprint!(
+                "{}",
+                diag::render(&d, &sources, std::io::stderr().is_terminal())
+            );
             let errors = d.len();
-            eprintln!("explsmctl: {errors} error{}", if errors == 1 { "" } else { "s" });
+            eprintln!(
+                "explsmctl: {errors} error{}",
+                if errors == 1 { "" } else { "s" }
+            );
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -162,7 +172,11 @@ fn check(
         policy.apps.len(),
         policy.grants.len(),
         policy.root_bypass.name(),
-        if policy.fail_closed { ", fail closed" } else { "" }
+        if policy.fail_closed {
+            ", fail closed"
+        } else {
+            ""
+        }
     );
     if !resolve {
         return Ok(ExitCode::SUCCESS);
@@ -186,13 +200,21 @@ fn check(
         let inherit = if app.inherit { ", inherit" } else { "" };
         println!("app {} ({}{inherit})", app.name, app.mode.name());
         for f in resolved.exes.iter().filter(|f| f.app == app.id) {
-            println!("  exe     {}  {}", f.path.display(), resolve::show_key(&f.key));
+            println!(
+                "  exe     {}  {}",
+                f.path.display(),
+                resolve::show_key(&f.key)
+            );
         }
         for var in &app.env {
             println!("  env     {var}");
         }
         for f in resolved.roots.iter().filter(|f| f.app == app.id) {
-            println!("  root    {}  {}", f.path.display(), resolve::show_key(&f.key));
+            println!(
+                "  root    {}  {}",
+                f.path.display(),
+                resolve::show_key(&f.key)
+            );
         }
         for m in resolved.missing.iter().filter(|m| m.app == app.id) {
             println!("  missing {} {}", m.kind.name(), m.path.display());
@@ -201,9 +223,17 @@ fn check(
     if !policy.terminals.is_empty() {
         println!("terminals");
         for f in &resolved.terminals {
-            println!("  exe     {}  {}", f.path.display(), resolve::show_key(&f.key));
+            println!(
+                "  exe     {}  {}",
+                f.path.display(),
+                resolve::show_key(&f.key)
+            );
         }
-        for m in resolved.missing.iter().filter(|m| m.kind == resolve::Kind::Terminal) {
+        for m in resolved
+            .missing
+            .iter()
+            .filter(|m| m.kind == resolve::Kind::Terminal)
+        {
             println!("  missing {}", m.path.display());
         }
     }
@@ -234,7 +264,8 @@ fn not_running(e: &zbus::Error) -> bool {
     error_name(e).is_some_and(|n| {
         matches!(
             n.as_str(),
-            "org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner"
+            "org.freedesktop.DBus.Error.ServiceUnknown"
+                | "org.freedesktop.DBus.Error.NameHasNoOwner"
         )
     })
 }
@@ -277,7 +308,10 @@ async fn unload(explsmd: PathBuf) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Err(e) if not_running(&e) => {
-            eprintln!("explsmctl: explsmd is not running; running {} --unload", explsmd.display());
+            eprintln!(
+                "explsmctl: explsmd is not running; running {} --unload",
+                explsmd.display()
+            );
             let status = Command::new(&explsmd)
                 .arg("--unload")
                 .status()
@@ -315,8 +349,7 @@ async fn status() -> Result<ExitCode> {
     );
     println!(
         "root bypass {}, policy generation {}",
-        s.root_bypass,
-        s.generation
+        s.root_bypass, s.generation
     );
     println!("users       {}", s.users.join(", "));
     for app in &s.apps {
@@ -366,7 +399,11 @@ async fn status() -> Result<ExitCode> {
             g.subject,
             g.owner,
             g.perms.join(", "),
-            if g.lifetime == "process" { "it exits" } else { "logout" }
+            if g.lifetime == "process" {
+                "it exits"
+            } else {
+                "logout"
+            }
         );
     }
     let counters: Vec<_> = s.stats.iter().map(|(n, v)| format!("{n}={v}")).collect();
@@ -380,7 +417,11 @@ async fn status() -> Result<ExitCode> {
 /// journalctl with explsmd's access events selected.
 fn journalctl(app: Option<&str>, since: Option<&str>) -> Command {
     let mut cmd = Command::new("journalctl");
-    cmd.args(["--no-pager", "SYSLOG_IDENTIFIER=explsmd", "EXPLSM_KIND=access"]);
+    cmd.args([
+        "--no-pager",
+        "SYSLOG_IDENTIFIER=explsmd",
+        "EXPLSM_KIND=access",
+    ]);
     if let Some(app) = app {
         cmd.arg(format!("EXPLSM_OWNER={app}"));
     }
@@ -426,7 +467,10 @@ fn learn(app: &str, since: Option<String>) -> Result<ExitCode> {
     if root {
         cmd.arg("EXPLSM_SUBJECT=root");
     }
-    let out = cmd.args(["-o", "json"]).output().context("running journalctl")?;
+    let out = cmd
+        .args(["-o", "json"])
+        .output()
+        .context("running journalctl")?;
     if !out.status.success() {
         bail!(
             "journalctl failed: {}",

@@ -82,7 +82,8 @@ mod tests {
             priority: 4,
             fields: vec![("EXPLSM_PATH", "/a\nb".into())],
         };
-        let mut want = b"MESSAGE=deny x\nPRIORITY=4\nSYSLOG_IDENTIFIER=explsmd\nEXPLSM_PATH\n".to_vec();
+        let mut want =
+            b"MESSAGE=deny x\nPRIORITY=4\nSYSLOG_IDENTIFIER=explsmd\nEXPLSM_PATH\n".to_vec();
         want.extend_from_slice(&4u64.to_le_bytes());
         want.extend_from_slice(b"/a\nb\n");
         assert_eq!(encode(&line), want);

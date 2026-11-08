@@ -56,7 +56,10 @@ pub fn perm_list(bits: u32) -> String {
 /// An app name for `exe`: its file name, made a valid name, with a number
 /// added if `taken`.
 pub fn app_name(exe: &Path, taken: impl Fn(&str) -> bool) -> String {
-    let file = exe.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let file = exe
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
     let mut base: String = file
         .chars()
         .map(|c| {
@@ -106,14 +109,16 @@ pub fn claim(user: &str, app: &str, path: &Path) -> String {
 
 /// Something worth knowing before allowing `exe` for good.
 pub fn exe_warning(exe: &Path, uid: u32) -> String {
-    let name = exe.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
     let stem = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     if INTERPRETERS.contains(&stem) {
         return format!("{name} runs other programs and scripts: allowing it allows all of them");
     }
-    let writable = |p: &Path| {
-        fs::metadata(p).is_ok_and(|m| m.uid() == uid || m.mode() & 0o002 != 0)
-    };
+    let writable =
+        |p: &Path| fs::metadata(p).is_ok_and(|m| m.uid() == uid || m.mode() & 0o002 != 0);
     if writable(exe) || exe.parent().is_some_and(writable) {
         return format!(
             "{} can be changed by this user, so any program could take its place",
@@ -138,7 +143,10 @@ pub fn user_name(uid: u32) -> String {
         .ok()
         .and_then(|t| parse_passwd(&t).into_iter().find(|u| u.uid == uid))
         .map(|u| u.name)
-        .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)))
+        .filter(|n| {
+            n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+        })
         .unwrap_or_else(|| format!("uid-{uid}"))
 }
 
@@ -196,7 +204,11 @@ pub fn add_declined(file: &Path, app: &str, path: &Path) -> io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
-    let mut f = OpenOptions::new().create(true).append(true).mode(0o644).open(file)?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o644)
+        .open(file)?;
     writeln!(f, "{app}\t{}", path.display())
 }
 
@@ -218,7 +230,13 @@ mod tests {
     #[test]
     fn writes_policy_text() {
         assert_eq!(
-            exe_grant("me", "rg", Path::new("/usr/bin/r\"g"), perm::READ | perm::LIST, "ssh"),
+            exe_grant(
+                "me",
+                "rg",
+                Path::new("/usr/bin/r\"g"),
+                perm::READ | perm::LIST,
+                "ssh"
+            ),
             "\n# allowed by me through a prompt\napp rg { exe \"/usr/bin/r\\\"g\" }\n\
              grant rg read, list to ssh\n"
         );

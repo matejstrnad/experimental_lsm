@@ -173,9 +173,10 @@ impl Prompts {
         if known || self.declined.contains(&(name.to_string(), path.clone())) {
             return None;
         }
-        let asked = self.open.values().any(|p| {
-            matches!(&p.kind, Kind::Claim { app: a, path: q } if *a == app && *q == path)
-        });
+        let asked = self
+            .open
+            .values()
+            .any(|p| matches!(&p.kind, Kind::Claim { app: a, path: q } if *a == app && *q == path));
         if asked {
             return None;
         }
@@ -229,7 +230,11 @@ mod tests {
     const WRITE: u32 = 2;
 
     fn exe(ino: u64) -> Subject {
-        Subject::Exe(FileKey { dev: 1, _pad: 0, ino })
+        Subject::Exe(FileKey {
+            dev: 1,
+            _pad: 0,
+            ino,
+        })
     }
 
     #[test]
@@ -237,23 +242,56 @@ mod tests {
         let mut p = Prompts::default();
         let t = Instant::now();
         let ask = p.access(t, 1000, exe(5), 1, READ, 42, None, None);
-        assert_eq!(ask, Outcome::Ask { id: 1, replaces: None });
+        assert_eq!(
+            ask,
+            Outcome::Ask {
+                id: 1,
+                replaces: None
+            }
+        );
         // Same subject and owner: merged, perms added.
-        assert_eq!(p.access(t, 1000, exe(5), 1, WRITE, 43, None, None), Outcome::Merged);
+        assert_eq!(
+            p.access(t, 1000, exe(5), 1, WRITE, 43, None, None),
+            Outcome::Merged
+        );
         let Kind::Access { perms, pid, .. } = p.get(1).unwrap().kind else {
             panic!()
         };
         assert_eq!((perms, pid), (READ | WRITE, 42));
         // Another user, owner or exe: separate prompts.
-        assert!(matches!(p.access(t, 1001, exe(5), 1, READ, 1, None, None), Outcome::Ask { .. }));
-        assert!(matches!(p.access(t, 1000, exe(5), 2, READ, 1, None, None), Outcome::Ask { .. }));
-        assert!(matches!(p.access(t, 1000, exe(6), 1, READ, 1, None, None), Outcome::Ask { .. }));
+        assert!(matches!(
+            p.access(t, 1001, exe(5), 1, READ, 1, None, None),
+            Outcome::Ask { .. }
+        ));
+        assert!(matches!(
+            p.access(t, 1000, exe(5), 2, READ, 1, None, None),
+            Outcome::Ask { .. }
+        ));
+        assert!(matches!(
+            p.access(t, 1000, exe(6), 1, READ, 1, None, None),
+            Outcome::Ask { .. }
+        ));
 
         let prompt = p.take(1).unwrap();
         p.denied(&prompt, t);
-        assert_eq!(p.access(t + Duration::from_secs(60), 1000, exe(5), 1, READ, 42, None, None), Outcome::Quiet);
+        assert_eq!(
+            p.access(
+                t + Duration::from_secs(60),
+                1000,
+                exe(5),
+                1,
+                READ,
+                42,
+                None,
+                None
+            ),
+            Outcome::Quiet
+        );
         let later = t + QUIET + Duration::from_secs(1);
-        assert!(matches!(p.access(later, 1000, exe(5), 1, READ, 42, None, None), Outcome::Ask { .. }));
+        assert!(matches!(
+            p.access(later, 1000, exe(5), 1, READ, 42, None, None),
+            Outcome::Ask { .. }
+        ));
     }
 
     #[test]
@@ -264,7 +302,10 @@ mod tests {
         let later = t + STALE + Duration::from_secs(1);
         assert_eq!(
             p.access(later, 1000, Subject::App(3), 1, READ, 44, None, None),
-            Outcome::Ask { id: 2, replaces: Some(1) }
+            Outcome::Ask {
+                id: 2,
+                replaces: Some(1)
+            }
         );
         assert!(p.get(1).is_none());
     }
@@ -275,12 +316,24 @@ mod tests {
         declined.insert(("claude".to_string(), PathBuf::from("/h/.no")));
         let mut p = Prompts::new(declined);
         let t = Instant::now();
-        assert_eq!(p.claim(t, 1000, 1, "claude", "/h/.claude".into(), false), Some(1));
-        assert_eq!(p.claim(t, 1000, 1, "claude", "/h/.claude".into(), false), None);
-        assert_eq!(p.claim(t, 1000, 1, "claude", "/h/.known".into(), true), None);
+        assert_eq!(
+            p.claim(t, 1000, 1, "claude", "/h/.claude".into(), false),
+            Some(1)
+        );
+        assert_eq!(
+            p.claim(t, 1000, 1, "claude", "/h/.claude".into(), false),
+            None
+        );
+        assert_eq!(
+            p.claim(t, 1000, 1, "claude", "/h/.known".into(), true),
+            None
+        );
         assert_eq!(p.claim(t, 1000, 1, "claude", "/h/.no".into(), false), None);
         p.declined("claude", "/h/.other".into());
-        assert_eq!(p.claim(t, 1000, 1, "claude", "/h/.other".into(), false), None);
+        assert_eq!(
+            p.claim(t, 1000, 1, "claude", "/h/.other".into(), false),
+            None
+        );
         assert_eq!(p.drop_uid(1000), [1]);
         assert!(p.get(1).is_none());
     }

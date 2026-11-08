@@ -29,7 +29,13 @@ impl TempGrants {
     }
 
     /// Add `perms` to what `key` has. `subject` is shown in the status.
-    pub fn add(&mut self, ebpf: &mut Ebpf, key: TempKey, perms: u32, subject: String) -> Result<()> {
+    pub fn add(
+        &mut self,
+        ebpf: &mut Ebpf,
+        key: TempKey,
+        perms: u32,
+        subject: String,
+    ) -> Result<()> {
         let bits = self.entries.get(&key).map_or(0, |(b, _)| *b) | perms;
         Self::map(ebpf)?
             .insert(key, bits, 0)
@@ -50,7 +56,9 @@ impl TempGrants {
 
     /// The process `tgid` exited.
     pub fn process_exited(&mut self, ebpf: &mut Ebpf, tgid: u32) -> Result<usize> {
-        self.remove_where(ebpf, |k| k.kind == temp_kind::PROC && k.a == u64::from(tgid))
+        self.remove_where(ebpf, |k| {
+            k.kind == temp_kind::PROC && k.a == u64::from(tgid)
+        })
     }
 
     /// The session of `uid` ended.

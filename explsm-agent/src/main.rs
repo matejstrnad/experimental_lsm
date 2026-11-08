@@ -23,9 +23,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use explsm_ipc::{
-    AGENT_PATH, AgentManagerProxy, BUS_NAME, PROMPT_CLAIM, PromptInfo, choice,
-};
+use explsm_ipc::{AGENT_PATH, AgentManagerProxy, BUS_NAME, PROMPT_CLAIM, PromptInfo, choice};
 use futures_util::{Stream, StreamExt as _};
 use tokio::{
     signal::unix::{SignalKind, signal},
@@ -135,7 +133,9 @@ trait Notifications {
 
 /// Notification bodies may contain markup.
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn button(choice: &str, info: &PromptInfo) -> String {
@@ -204,9 +204,21 @@ async fn daemon_down(n: &NotificationsProxy<'_>) -> Option<u32> {
     let body = "explsmd is not running, so no prompts are shown and new exes and folders \
                 are not protected. If it did not start at boot, nothing is protected. \
                 See <tt>systemctl status explsmd</tt>.";
-    let hints = HashMap::from([("urgency", Variant::U8(2)), ("resident", Variant::Bool(true))]);
+    let hints = HashMap::from([
+        ("urgency", Variant::U8(2)),
+        ("resident", Variant::Bool(true)),
+    ]);
     match n
-        .notify("explsm", 0, "security-low", "explsm is not running", body, &[], hints, 0)
+        .notify(
+            "explsm",
+            0,
+            "security-low",
+            "explsm is not running",
+            body,
+            &[],
+            hints,
+            0,
+        )
         .await
     {
         Ok(nid) => Some(nid),
@@ -412,8 +424,14 @@ mod tests {
     #[test]
     fn auto_answers() {
         let info = access();
-        assert_eq!(auto_answer(choice::ALLOW_SESSION, &info), choice::ALLOW_SESSION);
+        assert_eq!(
+            auto_answer(choice::ALLOW_SESSION, &info),
+            choice::ALLOW_SESSION
+        );
         assert_eq!(auto_answer(choice::ALLOW_ALWAYS, &info), choice::DENY);
-        assert_eq!(auto_answer("force:allow-always", &info), choice::ALLOW_ALWAYS);
+        assert_eq!(
+            auto_answer("force:allow-always", &info),
+            choice::ALLOW_ALWAYS
+        );
     }
 }

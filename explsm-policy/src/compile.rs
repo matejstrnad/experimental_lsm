@@ -7,8 +7,8 @@ use std::{
 
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
-    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_ROOT, SUBJECT_TERMINAL,
-    app_flag, perm, root_bypass,
+    MAX_EXES, MAX_GRANTS, MAX_ROOTS, MAX_TERMINALS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY,
+    OWNER_PINS, OWNER_UNKNOWN, SUBJECT_ROOT, SUBJECT_TERMINAL, app_flag, perm, root_bypass,
 };
 
 use crate::{
@@ -118,10 +118,7 @@ impl IdTable {
             APP_DAEMON => "explsmd",
             OWNER_PINS => "explsm-pins",
             OWNER_UNKNOWN => "unknown",
-            _ => self
-                .names
-                .get(id as usize - 1)
-                .map_or("?", String::as_str),
+            _ => self.names.get(id as usize - 1).map_or("?", String::as_str),
         }
     }
 
@@ -183,8 +180,7 @@ impl PathPat {
                     .note("own the folders inside it instead"));
             }
             None => {
-                return Err(err("path must be absolute or start with `~/`")
-                    .label("relative path"));
+                return Err(err("path must be absolute or start with `~/`").label("relative path"));
             }
         };
         let path = Path::new(rest);
@@ -210,8 +206,10 @@ impl PathPat {
         let is_glob = |n: &str| n.contains(['*', '?', '[']);
         let (last, dirs) = names.split_last().expect("checked above");
         if dirs.iter().any(|n| is_glob(n)) {
-            return Err(err("only the last path component may contain `*`, `?` or `[`")
-                .note("the daemon watches the parent directory of each path for changes"));
+            return Err(
+                err("only the last path component may contain `*`, `?` or `[`")
+                    .note("the daemon watches the parent directory of each path for changes"),
+            );
         }
         let glob = is_glob(last);
         if glob && let Err(e) = glob::Pattern::new(last) {
@@ -287,16 +285,20 @@ fn check_env(var: &Spanned<String>) -> Result<(), Diagnostic> {
         return Err(err("an `env` string is `NAME=VALUE`".into()));
     };
     if !LOADER_VARS.contains(&name) {
-        return Err(err(format!("`{name}` is no loader variable"))
-            .note("only LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT drop an identity, so only \
-                   they can be allowed"));
+        return Err(err(format!("`{name}` is no loader variable")).note(
+            "only LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT drop an identity, so only \
+                   they can be allowed",
+        ));
     }
     if value.is_empty() {
         return Err(err(format!("`{name}` has no value")));
     }
     // The exec hook reads the string with its NUL in one chunk.
     if var.value.len() + 1 >= ENV_CHUNK {
-        return Err(err(format!("`env` strings have at most {} bytes", ENV_CHUNK - 2)));
+        return Err(err(format!(
+            "`env` strings have at most {} bytes",
+            ENV_CHUNK - 2
+        )));
     }
     for path in env_paths(&var.value) {
         let p = Path::new(path);
@@ -305,13 +307,17 @@ fn check_env(var: &Spanned<String>) -> Result<(), Diagnostic> {
                 .note("the loader would look in whatever directory the app runs in"));
         }
         if path.contains('$') {
-            return Err(err(format!("`{path}`: `$ORIGIN` and the like are not supported")));
+            return Err(err(format!(
+                "`{path}`: `$ORIGIN` and the like are not supported"
+            )));
         }
         if !p.is_absolute()
             || p.components()
                 .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
         {
-            return Err(err(format!("`{path}` is not an absolute path without `.` and `..`")));
+            return Err(err(format!(
+                "`{path}` is not an absolute path without `.` and `..`"
+            )));
         }
     }
     Ok(())
@@ -354,18 +360,17 @@ impl Compiled {
     /// App id → value of the `MODES` map, for every id ever assigned. Apps
     /// that were removed are in audit mode.
     pub fn modes(&self) -> impl Iterator<Item = (AppId, u32)> + '_ {
-        self.ids.ids().map(|id| {
-            (
-                id,
-                self.app(id).map_or(MODE_AUDIT, |a| a.mode.map_value()),
-            )
-        })
+        self.ids
+            .ids()
+            .map(|id| (id, self.app(id).map_or(MODE_AUDIT, |a| a.mode.map_value())))
     }
 
     /// App id → value of the `APP_FLAGS` map, for every id ever assigned.
     /// Apps that were removed have none.
     pub fn app_flags(&self) -> impl Iterator<Item = (AppId, u32)> + '_ {
-        self.ids.ids().map(|id| (id, self.app(id).map_or(0, App::flags)))
+        self.ids
+            .ids()
+            .map(|id| (id, self.app(id).map_or(0, App::flags)))
     }
 
     /// Keys of the `ALLOWED_ENV` map: every app's `env` strings.
@@ -387,8 +392,10 @@ fn builtin_subject(s: &Spanned<String>) -> Result<AppId, Diagnostic> {
         "@unconfined" => Ok(APP_UNCONFINED),
         "@terminal" => Ok(SUBJECT_TERMINAL),
         "@root" => Ok(SUBJECT_ROOT),
-        other => Err(Diagnostic::error(s.span, format!("unknown builtin `{other}`"))
-            .note("the builtin subjects are `@unconfined`, `@root` and `@terminal`")),
+        other => Err(
+            Diagnostic::error(s.span, format!("unknown builtin `{other}`"))
+                .note("the builtin subjects are `@unconfined`, `@root` and `@terminal`"),
+        ),
     }
 }
 
@@ -488,7 +495,9 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     if before <= MAX_ALLOWED_ENV as usize && env_count > MAX_ALLOWED_ENV as usize {
                         diags.push(Diagnostic::error(
                             a.name.span,
-                            format!("too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps"),
+                            format!(
+                                "too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps"
+                            ),
                         ));
                     }
                     apps.push(app);
@@ -540,9 +549,14 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
         };
         if matches!(subject, Ok(SUBJECT_TERMINAL)) && terminals.is_empty() {
             diags.push(
-                Diagnostic::warning(g.subject.span, "`@terminal` grant without any `terminal` exe")
-                    .note("no process is a terminal until the policy names terminal exes, \
-                           e.g. `terminal \"/usr/bin/konsole\"`"),
+                Diagnostic::warning(
+                    g.subject.span,
+                    "`@terminal` grant without any `terminal` exe",
+                )
+                .note(
+                    "no process is a terminal until the policy names terminal exes, \
+                           e.g. `terminal \"/usr/bin/konsole\"`",
+                ),
             );
         }
         let owner = match g.owner.value.as_str() {
@@ -569,15 +583,20 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     diags.push(
                         Diagnostic::error(g.subject.span, "only an app can be granted `@explsm`")
                             .label("a builtin subject")
-                            .note("define an app for the program that changes explsm's files, \
-                                   e.g. `app dpkg { exe \"/usr/bin/dpkg\" }`"),
+                            .note(
+                                "define an app for the program that changes explsm's files, \
+                                   e.g. `app dpkg { exe \"/usr/bin/dpkg\" }`",
+                            ),
                     );
                     continue;
                 }
                 if subject == owner {
                     diags.push(
-                        Diagnostic::error(g.span, format!("{} already owns its data", g.subject.value))
-                            .label("grant to itself"),
+                        Diagnostic::error(
+                            g.span,
+                            format!("{} already owns its data", g.subject.value),
+                        )
+                        .label("grant to itself"),
                     );
                     continue;
                 }
@@ -585,8 +604,11 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                 if !grants.contains_key(&key) && grants.len() == MAX_GRANTS as usize {
                     if !grants_full {
                         diags.push(
-                            Diagnostic::error(g.span, format!("too many grants: at most {MAX_GRANTS}"))
-                                .note("grants of the same subject and owner count once"),
+                            Diagnostic::error(
+                                g.span,
+                                format!("too many grants: at most {MAX_GRANTS}"),
+                            )
+                            .note("grants of the same subject and owner count once"),
                         );
                         grants_full = true;
                     }
@@ -609,9 +631,19 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let exes = apps.iter().flat_map(|a| &a.exes);
     let roots = apps.iter().flat_map(|a| &a.roots);
     for (what, map, cap, pats) in [
-        ("exe", "EXES", MAX_EXES as usize - 3, exes.collect::<Vec<_>>()),
+        (
+            "exe",
+            "EXES",
+            MAX_EXES as usize - 3,
+            exes.collect::<Vec<_>>(),
+        ),
         ("owned", "ROOTS", MAX_ROOTS as usize, roots.collect()),
-        ("terminal", "TERMINALS", MAX_TERMINALS as usize, terminals.iter().collect()),
+        (
+            "terminal",
+            "TERMINALS",
+            MAX_TERMINALS as usize,
+            terminals.iter().collect(),
+        ),
     ] {
         if let Some(d) = too_many_paths(what, map, cap, &pats) {
             diags.push(d);
@@ -654,7 +686,10 @@ fn compile_app<'a>(
     let name = a.name.value.as_str();
     let before = diags.len();
     if RESERVED_NAMES.contains(&name) {
-        diags.push(Diagnostic::error(a.name.span, format!("`{name}` is a reserved name")));
+        diags.push(Diagnostic::error(
+            a.name.span,
+            format!("`{name}` is a reserved name"),
+        ));
     }
     if let Some(first) = spans.insert(name, a.name.span) {
         diags.push(
@@ -672,9 +707,10 @@ fn compile_app<'a>(
     for exe in &a.exes {
         if let Some(script) = &exe.script {
             diags.push(
-                Diagnostic::error(script.span, "`script` is not supported yet")
-                    .note("interpreter identity (`node …/cli.js`) is planned for a later phase; \
-                           without it every script of the interpreter would be the app"),
+                Diagnostic::error(script.span, "`script` is not supported yet").note(
+                    "interpreter identity (`node …/cli.js`) is planned for a later phase; \
+                           without it every script of the interpreter would be the app",
+                ),
             );
         }
         match PathPat::parse(&exe.path) {
@@ -874,7 +910,10 @@ mod tests {
             errors(&format!("{}{}", app("a"), app("a"))),
             ["app a is defined twice"]
         );
-        assert_eq!(errors(&app("unconfined")), ["`unconfined` is a reserved name"]);
+        assert_eq!(
+            errors(&app("unconfined")),
+            ["`unconfined` is a reserved name"]
+        );
         assert_eq!(errors("app a { owns \"/r\" }"), ["app a has no `exe`"]);
         assert_eq!(
             errors(r#"app a { exe "x", "/a/*/b", "/" owns "~", "/a/../b", "/c/[" }"#),
@@ -938,13 +977,22 @@ mod tests {
         assert_eq!(long.len(), 127);
         assert_eq!(env(&long), ["`env` strings have at most 126 bytes"]);
         assert_eq!(
-            errors("root_bypass on\nroot_bypass off\nusers a\nusers b\nfail_closed on\nfail_closed off"),
-            ["`root_bypass` is set twice", "`users` is given twice", "`fail_closed` is set twice"]
+            errors(
+                "root_bypass on\nroot_bypass off\nusers a\nusers b\nfail_closed on\nfail_closed off"
+            ),
+            [
+                "`root_bypass` is set twice",
+                "`users` is given twice",
+                "`fail_closed` is set twice"
+            ]
         );
         let grant = |g: &str| errors(&format!("{}grant {g}", app("a")));
         assert_eq!(grant("b read to a"), ["unknown app `b`"]);
         assert_eq!(grant("@unconfined read to b"), ["unknown app `b`"]);
-        assert_eq!(grant("@unconfined exec to a"), ["unknown permission `exec`"]);
+        assert_eq!(
+            grant("@unconfined exec to a"),
+            ["unknown permission `exec`"]
+        );
 
         assert_eq!(grant("@nobody read to a"), ["unknown builtin `@nobody`"]);
         assert_eq!(
@@ -996,37 +1044,55 @@ mod tests {
         assert!(compiled("require_sandbox on").require_sandbox);
         assert!(!compiled("require_sandbox off").require_sandbox);
         assert!(compiled("require_dbus on").require_dbus);
-        assert_eq!(errors("require_dbus on\nrequire_dbus on"), ["`require_dbus` is set twice"]);
+        assert_eq!(
+            errors("require_dbus on\nrequire_dbus on"),
+            ["`require_dbus` is set twice"]
+        );
     }
 
     #[test]
     fn too_many_grants() {
-        let mut text: String = (0..70).map(|i| format!("app a{i} {{ exe \"/a{i}\" }}\n")).collect();
+        let mut text: String = (0..70)
+            .map(|i| format!("app a{i} {{ exe \"/a{i}\" }}\n"))
+            .collect();
         for s in 0..70 {
             for o in (0..70).filter(|o| *o != s) {
                 text.push_str(&format!("grant a{o} read to a{s}\n"));
             }
         }
-        assert_eq!(errors(&text), [format!("too many grants: at most {MAX_GRANTS}")]);
+        assert_eq!(
+            errors(&text),
+            [format!("too many grants: at most {MAX_GRANTS}")]
+        );
     }
 
     #[test]
     fn too_many_paths() {
-        let exes: Vec<_> = (0..MAX_EXES - 3).map(|i| format!("\"/bin/e{i}\"")).collect();
+        let exes: Vec<_> = (0..MAX_EXES - 3)
+            .map(|i| format!("\"/bin/e{i}\""))
+            .collect();
         let text = format!("app a {{ exe {} }}", exes.join(", "));
         compiled(&text);
         // The same path twice is one entry; one more is too many.
         let more = format!("app a {{ exe {}, \"/bin/e0\" }}", exes.join(", "));
         compiled(&more);
         let more = format!("app a {{ exe {}, \"/bin/x\" }}", exes.join(", "));
-        assert_eq!(errors(&more), [format!("too many exe paths: at most {}", MAX_EXES - 3)]);
+        assert_eq!(
+            errors(&more),
+            [format!("too many exe paths: at most {}", MAX_EXES - 3)]
+        );
         // Globs and home paths may match nothing; only the daemon can tell.
         let globs = format!("app a {{ exe {}, \"/bin/x*\", \"~/x\" }}", exes.join(", "));
         compiled(&globs);
 
-        let terminals: Vec<_> = (0..=MAX_TERMINALS).map(|i| format!("\"/bin/t{i}\"")).collect();
+        let terminals: Vec<_> = (0..=MAX_TERMINALS)
+            .map(|i| format!("\"/bin/t{i}\""))
+            .collect();
         let text = format!("terminal {}", terminals.join(", "));
-        assert_eq!(errors(&text), [format!("too many terminal paths: at most {MAX_TERMINALS}")]);
+        assert_eq!(
+            errors(&text),
+            [format!("too many terminal paths: at most {MAX_TERMINALS}")]
+        );
     }
 
     #[test]
@@ -1037,7 +1103,9 @@ mod tests {
         let text = format!("app a {{ exe \"/a\" env {} }}", env.join(", "));
         assert_eq!(
             errors(&text),
-            [format!("too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps")]
+            [format!(
+                "too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps"
+            )]
         );
     }
 
@@ -1066,7 +1134,10 @@ mod tests {
         let w: Vec<_> = c.warnings.iter().map(|d| d.message.as_str()).collect();
         assert_eq!(w, ["`@terminal` grant without any `terminal` exe"]);
         assert_eq!(errors("claim b \"/x\""), ["unknown app `b`"]);
-        assert_eq!(errors("app terminal { exe \"/t\" }"), ["`terminal` is a reserved name"]);
+        assert_eq!(
+            errors("app terminal { exe \"/t\" }"),
+            ["`terminal` is a reserved name"]
+        );
     }
 
     #[test]
@@ -1085,7 +1156,9 @@ mod tests {
         assert_eq!(c.name(APP_DAEMON), "explsmd");
         for subject in ["@root", "@unconfined", "@terminal"] {
             assert_eq!(
-                errors(&format!("terminal \"/t\"\ngrant {subject} write to @explsm")),
+                errors(&format!(
+                    "terminal \"/t\"\ngrant {subject} write to @explsm"
+                )),
                 ["only an app can be granted `@explsm`"]
             );
         }
@@ -1117,7 +1190,10 @@ mod tests {
         );
         assert!(c.warnings.is_empty());
         assert_eq!(c.name(SUBJECT_ROOT), "root");
-        assert_eq!(errors("app root { exe \"/r\" }"), ["`root` is a reserved name"]);
+        assert_eq!(
+            errors("app root { exe \"/r\" }"),
+            ["`root` is a reserved name"]
+        );
         assert_eq!(
             errors("app a { exe \"/a\" }\ngrant a read to @root"),
             ["the owner of a grant must be an app, `@explsm` or `*`"]
@@ -1155,12 +1231,18 @@ mod tests {
 
     #[test]
     fn renders_diagnostics() {
-        let sources = Sources::single("ssh.explsm", "app ssh { exe \"/usr/bin/ssh\" }\ngrant bob read to ssh\n");
+        let sources = Sources::single(
+            "ssh.explsm",
+            "app ssh { exe \"/usr/bin/ssh\" }\ngrant bob read to ssh\n",
+        );
         let ast = parse(&sources).unwrap();
         let d = compile(&ast, &IdTable::default()).unwrap_err();
         let text = render(&d, &sources, false);
         assert!(text.contains("unknown app `bob`"), "{text}");
         assert!(text.contains("ssh.explsm:2:7"), "{text}");
-        assert!(text.contains("subject is not defined by any `app`"), "{text}");
+        assert!(
+            text.contains("subject is not defined by any `app`"),
+            "{text}"
+        );
     }
 }

@@ -164,7 +164,13 @@ fn load(ebpf: &mut Ebpf, btf: &Btf, own: &mut HashMap<OwnKey, u32>, h: &hooks::H
         .map_err(verifier_tail)
         .with_context(|| format!("loading {prog}"))?;
     let id = p.info()?.id();
-    own.insert(OwnKey { kind: own_kind::PROG, id }, 1);
+    own.insert(
+        OwnKey {
+            kind: own_kind::PROG,
+            id,
+        },
+        1,
+    );
     Ok(())
 }
 
@@ -186,7 +192,13 @@ fn attach_all(
             let link = FdLink::from(p.take_link(link)?);
             // Pinned by hook, whichever variant of the program it is.
             let id = pins.stage(hook, link)?;
-            own.insert(OwnKey { kind: own_kind::LINK, id }, 1);
+            own.insert(
+                OwnKey {
+                    kind: own_kind::LINK,
+                    id,
+                },
+                1,
+            );
         }
         Ok(())
     };
@@ -232,7 +244,11 @@ fn check_pinned_layout(cli: &Cli) -> Result<bool> {
         "explsmd: the maps pinned in {} are of layout {pinned:#010x}, this is \
          {LAYOUT_VERSION:#010x}: {}",
         cli.pin_dir.display(),
-        if same { "it can take them over" } else { "unload first" }
+        if same {
+            "it can take them over"
+        } else {
+            "unload first"
+        }
     );
     Ok(same)
 }
@@ -344,7 +360,13 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
         load(&mut ebpf, &btf, &mut own, h)?;
     }
     for id in pins.map_ids()? {
-        own.insert(OwnKey { kind: own_kind::MAP, id }, 1);
+        own.insert(
+            OwnKey {
+                kind: own_kind::MAP,
+                id,
+            },
+            1,
+        );
     }
     // An earlier daemon that died left its pid; this one's goes in with the
     // policy. Cleared first, so a start that fails does not leave it either.
@@ -392,7 +414,10 @@ fn reload(state: &mut State) -> explsm_ipc::ReloadReply {
     if reply.ok {
         eprintln!("explsmd: policy reloaded: {}", reply.summary);
     } else {
-        eprintln!("explsmd: reload failed: {}\n{}", reply.summary, reply.diagnostics);
+        eprintln!(
+            "explsmd: reload failed: {}\n{}",
+            reply.summary, reply.diagnostics
+        );
     }
     reply
 }
@@ -401,10 +426,10 @@ fn sync_watches(watcher: &mut Watcher, state: &State) {
     let mut wanted = watch::wanted(state.watches(), state.policy_path());
     // The agent's exe is resolved again like the policy's.
     if let (Some(dir), Some(name)) = (state.agent_path().parent(), state.agent_path().file_name()) {
-        wanted
-            .entry(dir.to_path_buf())
-            .or_default()
-            .insert((glob::Pattern::escape(&name.to_string_lossy()), watch::Purpose::Resolve));
+        wanted.entry(dir.to_path_buf()).or_default().insert((
+            glob::Pattern::escape(&name.to_string_lossy()),
+            watch::Purpose::Resolve,
+        ));
     }
     for w in watcher.sync(&wanted) {
         eprintln!("explsmd: warning: {w}");
@@ -474,7 +499,11 @@ async fn main() -> Result<()> {
     // Without pinning, the maps still go to bpffs (their definitions ask
     // for it), in a directory of this run that is removed on exit.
     let pin_dir = if cli.no_pin {
-        PathBuf::from(format!("{}-run{}", cli.pin_dir.display(), std::process::id()))
+        PathBuf::from(format!(
+            "{}-run{}",
+            cli.pin_dir.display(),
+            std::process::id()
+        ))
     } else {
         cli.pin_dir.clone()
     };
@@ -491,7 +520,9 @@ async fn main() -> Result<()> {
     if !cli.no_landlock
         && let Err(e) = procs::start()
     {
-        eprintln!("explsmd: warning: /proc helper: {e}; processes found from now on can't be seeded");
+        eprintln!(
+            "explsmd: warning: /proc helper: {e}; processes found from now on can't be seeded"
+        );
     }
 
     let ring = RingBuf::try_from(state.ebpf.take_map("EVENTS").context("EVENTS")?)?;
@@ -518,7 +549,9 @@ async fn main() -> Result<()> {
                 bail!("D-Bus API not available (`require_dbus on`): {e}");
             }
             Err(e) => {
-                eprintln!("explsmd: warning: D-Bus API not available: {e}; no prompts or explsmctl");
+                eprintln!(
+                    "explsmd: warning: D-Bus API not available: {e}; no prompts or explsmctl"
+                );
                 None
             }
         }

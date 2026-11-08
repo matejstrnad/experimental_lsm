@@ -35,8 +35,9 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
-    ACTION_BYPASS, ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
-    LOGIN_UNSET, REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT, TF_TERMINAL, env_var, own_kind, path_kind, perm,
+    ACTION_BYPASS, ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, LOGIN_UNSET, Op,
+    REASON_CROSS, REASON_DEEP, REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT,
+    TF_TERMINAL, env_var, own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
 
@@ -210,7 +211,11 @@ fn rlimit_name(resource: u32) -> &'static str {
 
 /// A login uid or session id; `unset` for a task that never logged in.
 fn login_id(id: u32) -> String {
-    if id == LOGIN_UNSET { "unset".into() } else { id.to_string() }
+    if id == LOGIN_UNSET {
+        "unset".into()
+    } else {
+        id.to_string()
+    }
 }
 
 /// The subject's name: `root` for an unconfined task with fsuid 0 (the
@@ -242,7 +247,11 @@ pub fn render(
     let proc = cstr_field(&ev.proc_comm);
     // Root's lines say who logged in: an admin's sudo or ssh session.
     let login = if ev.fsuid == 0 {
-        format!(" loginuid={} sessionid={}", login_id(ev.loginuid), login_id(ev.sessionid))
+        format!(
+            " loginuid={} sessionid={}",
+            login_id(ev.loginuid),
+            login_id(ev.sessionid)
+        )
     } else {
         String::new()
     };
@@ -296,8 +305,10 @@ pub fn render(
         };
     }
     if ev.kind == EventKind::Claim as u32 {
-        let path = claim_path(ev, parents)
-            .map_or_else(|| format!("<{}>/{path}", show_key(&ev.file)), |p| p.display().to_string());
+        let path = claim_path(ev, parents).map_or_else(
+            || format!("<{}>/{path}", show_key(&ev.file)),
+            |p| p.display().to_string(),
+        );
         fields.push(("EXPLSM_KIND", "claim".into()));
         fields.push(("EXPLSM_PATH", path.clone()));
         return Line {
@@ -479,7 +490,8 @@ mod tests {
         ev.reason = REASON_DEEP;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
         assert!(
-            line.text.contains(" owner=unknown open(r) need=deep(read,write) "),
+            line.text
+                .contains(" owner=unknown open(r) need=deep(read,write) "),
             "{}",
             line.text
         );
@@ -491,7 +503,11 @@ mod tests {
         ev.subject = APP_UNCONFINED;
         ev.task_flags = TF_TERMINAL;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
-        assert!(line.text.contains(" subject=unconfined(terminal) "), "{}", line.text);
+        assert!(
+            line.text.contains(" subject=unconfined(terminal) "),
+            "{}",
+            line.text
+        );
         assert!(line.fields.contains(&("EXPLSM_TERMINAL", "1".into())));
 
         assert!(!line.text.contains("loginuid"), "{}", line.text);
@@ -501,9 +517,14 @@ mod tests {
         ev.loginuid = 1000;
         ev.sessionid = LOGIN_UNSET;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
-        assert!(line.text.contains(" subject=root(terminal) "), "{}", line.text);
         assert!(
-            line.text.contains(" uid=0 loginuid=1000 sessionid=unset proc=rm "),
+            line.text.contains(" subject=root(terminal) "),
+            "{}",
+            line.text
+        );
+        assert!(
+            line.text
+                .contains(" uid=0 loginuid=1000 sessionid=unset proc=rm "),
             "{}",
             line.text
         );
@@ -526,9 +547,12 @@ mod tests {
     fn renders_claims() {
         use explsm_policy::{IdTable, Sources, check};
 
-        let ids = check(&Sources::single("t", "app claude { exe \"/c\" }"), &IdTable::default())
-            .unwrap()
-            .ids;
+        let ids = check(
+            &Sources::single("t", "app claude { exe \"/c\" }"),
+            &IdTable::default(),
+        )
+        .unwrap()
+        .ids;
         let mut ev: Event = unsafe { std::mem::zeroed() };
         ev.kind = EventKind::Claim as u32;
         ev.pid = 7;
@@ -536,7 +560,11 @@ mod tests {
         ev.uid = 1000;
         ev.fsuid = 1000;
         ev.subject = 1;
-        ev.file = FileKey { dev: 1, _pad: 0, ino: 5 };
+        ev.file = FileKey {
+            dev: 1,
+            _pad: 0,
+            ino: 5,
+        };
         ev.path.kind = path_kind::FULL;
         ev.path.buf[..7].copy_from_slice(b".claude");
         ev.path.len = 8;
@@ -546,6 +574,9 @@ mod tests {
             line.text,
             "claim  pid=7 tid=7 uid=1000 proc= comm= app=claude path=/home/me/.claude"
         );
-        assert_eq!(claim_path(&ev, &parents), Some(PathBuf::from("/home/me/.claude")));
+        assert_eq!(
+            claim_path(&ev, &parents),
+            Some(PathBuf::from("/home/me/.claude"))
+        );
     }
 }

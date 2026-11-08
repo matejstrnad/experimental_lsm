@@ -85,7 +85,12 @@ pub fn select(
 pub fn system(wanted: Option<&[Spanned<String>]>) -> io::Result<(Vec<User>, Vec<String>)> {
     let passwd = fs::read_to_string("/etc/passwd")?;
     let defs = fs::read_to_string("/etc/login.defs").unwrap_or_default();
-    Ok(select(&parse_passwd(&passwd), wanted, uid_range(&defs), |p| p.is_dir()))
+    Ok(select(
+        &parse_passwd(&passwd),
+        wanted,
+        uid_range(&defs),
+        |p| p.is_dir(),
+    ))
 }
 
 #[cfg(test)]

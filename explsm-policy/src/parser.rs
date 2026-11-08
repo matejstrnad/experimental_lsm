@@ -331,8 +331,10 @@ impl Parser {
         }
         if perms.is_empty() {
             let span = to.map_or(self.span(), |t| t.span);
-            self.diags
-                .push(Diagnostic::error(span, "grant without permissions").label("expected a permission before `to`"));
+            self.diags.push(
+                Diagnostic::error(span, "grant without permissions")
+                    .label("expected a permission before `to`"),
+            );
             return Err(Failed);
         }
         let owner = self.party("an app name or `*`", true)?;
@@ -349,7 +351,11 @@ fn join(a: Span, b: Span) -> Span {
     Span {
         file: a.file,
         start: a.start,
-        end: if b.file == a.file { b.end.max(a.end) } else { a.end },
+        end: if b.file == a.file {
+            b.end.max(a.end)
+        } else {
+            a.end
+        },
     }
 }
 
@@ -390,11 +396,17 @@ mod tests {
             claim claude "/home/me/.claude-extra"
         "#);
         assert_eq!(p.items.len(), 7);
-        let Item::RootBypass(b) = &p.items[0] else { panic!() };
+        let Item::RootBypass(b) = &p.items[0] else {
+            panic!()
+        };
         assert_eq!(b.value, RootBypass::Off);
-        let Item::Terminal(t) = &p.items[5] else { panic!() };
+        let Item::Terminal(t) = &p.items[5] else {
+            panic!()
+        };
         assert_eq!(t.len(), 2);
-        let Item::Claim(c) = &p.items[6] else { panic!() };
+        let Item::Claim(c) = &p.items[6] else {
+            panic!()
+        };
         assert_eq!(c.app.value, "claude");
         assert_eq!(c.paths[0].value, "/home/me/.claude-extra");
         let Item::App(app) = &p.items[2] else {
@@ -414,7 +426,9 @@ mod tests {
         let perms: Vec<_> = g.perms.iter().map(|p| p.value.as_str()).collect();
         assert_eq!(perms, ["read", "list"]);
         assert_eq!(g.owner.value, "*");
-        let Item::Users(u) = &p.items[1] else { panic!() };
+        let Item::Users(u) = &p.items[1] else {
+            panic!()
+        };
         assert_eq!(u.value.len(), 2);
     }
 
@@ -426,7 +440,9 @@ mod tests {
             ("audit", RootBypass::Audit),
         ] {
             let p = ok(&format!("root_bypass {text}"));
-            let Item::RootBypass(b) = &p.items[0] else { panic!() };
+            let Item::RootBypass(b) = &p.items[0] else {
+                panic!()
+            };
             assert_eq!(b.value, want);
         }
     }
@@ -473,6 +489,13 @@ mod tests {
         ]);
         let d = parse(&sources).unwrap_err();
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].span, Span { file: 1, start: 5, end: 5 });
+        assert_eq!(
+            d[0].span,
+            Span {
+                file: 1,
+                start: 5,
+                end: 5
+            }
+        );
     }
 }

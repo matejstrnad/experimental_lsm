@@ -23,12 +23,10 @@ use std::{
 };
 
 use explsm_common::{
-    ACTION_DENY, APP_AGENT, APP_DAEMON, APP_UNCONFINED, OWNER_PINS, Event, EventKind, REASON_PERMS, TempKey, perm,
-    temp_kind,
+    ACTION_DENY, APP_AGENT, APP_DAEMON, APP_UNCONFINED, Event, EventKind, OWNER_PINS, REASON_PERMS,
+    TempKey, perm, temp_kind,
 };
-use explsm_ipc::{
-    AgentProxy, AgentStatus, PROMPT_ACCESS, PROMPT_CLAIM, PromptInfo, choice,
-};
+use explsm_ipc::{AgentProxy, AgentStatus, PROMPT_ACCESS, PROMPT_CLAIM, PromptInfo, choice};
 use explsm_policy::resolve::{file_key, show_key};
 use tokio::sync::mpsc;
 use zbus::Connection;
@@ -101,18 +99,23 @@ impl Desk {
     /// Ask about the new folders that have settled and still exist.
     pub fn new_folders(&mut self, state: &State) {
         let now = Instant::now();
-        let (due, later): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.new_folders).into_iter().partition(|f| f.due <= now);
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.new_folders)
+            .into_iter()
+            .partition(|f| f.due <= now);
         self.new_folders = later;
         for f in due {
-            if !self.agents.contains_key(&f.uid) || !fs::metadata(&f.path).is_ok_and(|m| m.is_dir()) {
+            if !self.agents.contains_key(&f.uid) || !fs::metadata(&f.path).is_ok_and(|m| m.is_dir())
+            {
                 continue;
             }
             let resolved = state.resolved();
             let known = resolved.roots.iter().any(|r| r.path == f.path)
                 || resolved.missing.iter().any(|m| m.path == f.path);
             let name = state.policy.name(f.app).to_string();
-            if let Some(id) = self.prompts.claim(now, f.uid, f.app, &name, f.path.clone(), known) {
+            if let Some(id) = self
+                .prompts
+                .claim(now, f.uid, f.app, &name, f.path.clone(), known)
+            {
                 let choices = vec![choice::CLAIM.to_string(), choice::DECLINE.to_string()];
                 if let Some(prompt) = self.prompts.get_mut(id) {
                     prompt.choices = choices.clone();
@@ -281,7 +284,10 @@ impl Desk {
         choices.push(choice::DENY.into());
         if let Some(prompt) = self.prompts.get_mut(id) {
             prompt.choices = choices.clone();
-            if let Kind::Access { pidfd: p, exe: e, .. } = &mut prompt.kind {
+            if let Kind::Access {
+                pidfd: p, exe: e, ..
+            } = &mut prompt.kind
+            {
                 *p = pidfd;
                 *e = exe;
             }
@@ -337,8 +343,14 @@ impl Desk {
         id: u64,
         choice: &str,
     ) -> Result<Answered, String> {
-        let prompt = self.prompts.get(id).ok_or("no such prompt (answered or expired)")?;
-        let is_agent = self.agents.get(&uid).is_some_and(|a| a.connection == connection);
+        let prompt = self
+            .prompts
+            .get(id)
+            .ok_or("no such prompt (answered or expired)")?;
+        let is_agent = self
+            .agents
+            .get(&uid)
+            .is_some_and(|a| a.connection == connection);
         if prompt.uid != uid || !is_agent {
             return Err("only the agent of the prompt's user may answer it".into());
         }
@@ -409,7 +421,8 @@ impl Desk {
                                 let exe = exe
                                     .filter(|p| claims::writable_path(p))
                                     .ok_or("the exe's path is not known")?;
-                                let name = claims::app_name(&exe, |n| state.policy.ids.get(n).is_some());
+                                let name =
+                                    claims::app_name(&exe, |n| state.policy.ids.get(n).is_some());
                                 claims::exe_grant(&user, &name, &exe, perms, &owner_name)
                             }
                         };
@@ -448,9 +461,12 @@ impl Desk {
     /// Append to the user's claims file and reload; take it back if the
     /// policy does not load with it.
     fn write_policy(&self, state: &mut State, user: &str, text: &str) -> Result<(), String> {
-        let dir = state.claims_dir().ok_or("no claims directory")?.to_path_buf();
-        let appended =
-            claims::append(&dir, user, text).map_err(|e| format!("writing {}: {e}", dir.display()))?;
+        let dir = state
+            .claims_dir()
+            .ok_or("no claims directory")?
+            .to_path_buf();
+        let appended = claims::append(&dir, user, text)
+            .map_err(|e| format!("writing {}: {e}", dir.display()))?;
         let reply = state.reload();
         if reply.ok {
             eprintln!(
@@ -464,7 +480,10 @@ impl Desk {
         if let Err(e) = appended.undo() {
             eprintln!("explsmd: warning: taking back what was written to {path}: {e}");
         }
-        eprintln!("explsmd: the answer does not load, taken back: {}\n{}", reply.summary, reply.diagnostics);
+        eprintln!(
+            "explsmd: the answer does not load, taken back: {}\n{}",
+            reply.summary, reply.diagnostics
+        );
         Err(format!("{}: {}", reply.summary, reply.diagnostics))
     }
 }
@@ -486,21 +505,40 @@ fn exe_path(ev: &Event) -> Option<PathBuf> {
     {
         return Some(exe.path);
     }
-    let end = ev.proc_comm.iter().position(|b| *b == 0).unwrap_or(ev.proc_comm.len());
+    let end = ev
+        .proc_comm
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(ev.proc_comm.len());
     let name = String::from_utf8_lossy(&ev.proc_comm[..end]).into_owned();
     if name.is_empty() || name.contains('/') {
         return None;
     }
-    ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
-        .iter()
-        .map(|dir| PathBuf::from(dir).join(&name))
-        .find(|p| file_key(p).ok() == Some(ev.exe))
-        .and_then(|p| fs::canonicalize(p).ok())
+    [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    .iter()
+    .map(|dir| PathBuf::from(dir).join(&name))
+    .find(|p| file_key(p).ok() == Some(ev.exe))
+    .and_then(|p| fs::canonicalize(p).ok())
 }
 
 fn process(ev: &Event) -> String {
-    let end = ev.proc_comm.iter().position(|b| *b == 0).unwrap_or(ev.proc_comm.len());
-    format!("{} (pid {})", String::from_utf8_lossy(&ev.proc_comm[..end]), ev.pid)
+    let end = ev
+        .proc_comm
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(ev.proc_comm.len());
+    format!(
+        "{} (pid {})",
+        String::from_utf8_lossy(&ev.proc_comm[..end]),
+        ev.pid
+    )
 }
 
 fn perm_names(bits: u32) -> Vec<String> {

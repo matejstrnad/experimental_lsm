@@ -108,7 +108,8 @@ impl Quiet {
             }
             if let Some(mut line) = w.last.take() {
                 line.text.push_str(&format!(" repeated={}", w.repeated));
-                line.fields.push(("EXPLSM_REPEATED", w.repeated.to_string()));
+                line.fields
+                    .push(("EXPLSM_REPEATED", w.repeated.to_string()));
                 out.push(line);
             }
             false

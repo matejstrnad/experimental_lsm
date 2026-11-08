@@ -87,7 +87,11 @@ fn seed_pass(
 ) -> Result<()> {
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
             continue;
         };
         // Kernel threads have no exe, and a process may exit mid-scan.
@@ -119,7 +123,11 @@ fn seed_pass(
             continue;
         };
         for thread in threads.flatten() {
-            let Some(tid) = thread.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            let Some(tid) = thread
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
                 continue;
             };
             match seed_thread(map, tid, app_id, pid, key) {
@@ -205,7 +213,10 @@ pub fn terminals(
                 continue;
             };
             for thread in threads.flatten() {
-                let Some(tid) = thread.file_name().to_str().and_then(|s| s.parse::<u32>().ok())
+                let Some(tid) = thread
+                    .file_name()
+                    .to_str()
+                    .and_then(|s| s.parse::<u32>().ok())
                 else {
                     continue;
                 };
@@ -226,7 +237,11 @@ pub fn terminals(
 fn processes() -> Result<HashMap<u32, (u32, Option<FileKey>)>> {
     let mut out = HashMap::new();
     for entry in fs::read_dir("/proc")?.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
             continue;
         };
         let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
@@ -272,9 +287,11 @@ fn below_terminals(
             Some(k) if terminals.contains(&k) => true,
             Some(k) if exes.contains_key(&k) => false,
             None => false,
-            _ => ppid != 0 && ppid != pid && depth < 256 && {
-                flagged(ppid, procs, terminals, exes, memo, depth + 1)
-            },
+            _ => {
+                ppid != 0 && ppid != pid && depth < 256 && {
+                    flagged(ppid, procs, terminals, exes, memo, depth + 1)
+                }
+            }
         };
         memo.insert(pid, v);
         v
@@ -384,14 +401,7 @@ fn map_cmd<K, V>(
         value: ptr::from_mut(value) as u64,
         flags,
     };
-    let ret = unsafe {
-        libc::syscall(
-            libc::SYS_bpf,
-            cmd,
-            ptr::from_ref(&attr),
-            size_of::<Attr>(),
-        )
-    };
+    let ret = unsafe { libc::syscall(libc::SYS_bpf, cmd, ptr::from_ref(&attr), size_of::<Attr>()) };
     if ret < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -404,7 +414,11 @@ mod tests {
     use super::*;
 
     fn key(ino: u64) -> FileKey {
-        FileKey { dev: 1, _pad: 0, ino }
+        FileKey {
+            dev: 1,
+            _pad: 0,
+            ino,
+        }
     }
 
     #[test]

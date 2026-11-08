@@ -16,7 +16,11 @@ fn main() {
     };
     let version = layout_version(&read(&header), &read(&object));
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("layout.rs");
-    fs::write(&out, format!("pub const LAYOUT_VERSION: u32 = {version:#010x};\n")).unwrap();
+    fs::write(
+        &out,
+        format!("pub const LAYOUT_VERSION: u32 = {version:#010x};\n"),
+    )
+    .unwrap();
     println!("cargo:rerun-if-changed={}", header.display());
     println!("cargo:rerun-if-changed={}", object.display());
     println!("cargo:rerun-if-changed=layout.rs");

@@ -177,7 +177,11 @@ pub struct State {
 }
 
 /// The compiled policy and its warnings, rendered.
-fn load_policy(opts: &Options, ids: &IdTable, color: bool) -> Result<(Compiled, Vec<String>), String> {
+fn load_policy(
+    opts: &Options,
+    ids: &IdTable,
+    color: bool,
+) -> Result<(Compiled, Vec<String>), String> {
     let sources = Sources::load_with_claims(&opts.policy, opts.claims.as_deref())
         .map_err(|e| format!("reading {}: {e}", opts.policy.display()))?;
     let policy =
@@ -185,7 +189,11 @@ fn load_policy(opts: &Options, ids: &IdTable, color: bool) -> Result<(Compiled, 
     let warnings = policy
         .warnings
         .iter()
-        .map(|d| diag::render(std::slice::from_ref(d), &sources, color).trim_end().to_string())
+        .map(|d| {
+            diag::render(std::slice::from_ref(d), &sources, color)
+                .trim_end()
+                .to_string()
+        })
         .collect();
     Ok((policy, warnings))
 }
@@ -308,7 +316,8 @@ impl Failed {
         if self.restored {
             self.error
         } else {
-            self.error.context("the old policy could not be fully restored")
+            self.error
+                .context("the old policy could not be fully restored")
         }
     }
 }
@@ -322,8 +331,10 @@ struct Undo(Vec<UndoStep>);
 
 /// Put `key` of the hash map `name` back to `old` (`None`: absent).
 fn restore<K: Pod, V: Pod>(ebpf: &mut Ebpf, name: &str, key: K, old: Option<V>) -> Result<()> {
-    let mut map: BpfHashMap<_, K, V> =
-        BpfHashMap::try_from(ebpf.map_mut(name).with_context(|| format!("{name} missing"))?)?;
+    let mut map: BpfHashMap<_, K, V> = BpfHashMap::try_from(
+        ebpf.map_mut(name)
+            .with_context(|| format!("{name} missing"))?,
+    )?;
     match old {
         Some(v) => map.insert(key, v, 0),
         None => map.remove(&key),
@@ -348,13 +359,17 @@ fn set_array<V: Pod>(
     value: V,
     undo: &mut Undo,
 ) -> Result<()> {
-    let mut map: Array<_, V> =
-        Array::try_from(ebpf.map_mut(name).with_context(|| format!("{name} missing"))?)?;
+    let mut map: Array<_, V> = Array::try_from(
+        ebpf.map_mut(name)
+            .with_context(|| format!("{name} missing"))?,
+    )?;
     let old = map.get(&index, 0)?;
-    map.set(index, value, 0).with_context(|| format!("updating {name}"))?;
+    map.set(index, value, 0)
+        .with_context(|| format!("updating {name}"))?;
     undo.0.push(Box::new(move |ebpf: &mut Ebpf| {
         let mut map: Array<_, V> = Array::try_from(ebpf.map_mut(name).context(name)?)?;
-        map.set(index, old, 0).with_context(|| format!("restoring {name}"))
+        map.set(index, old, 0)
+            .with_context(|| format!("restoring {name}"))
     }));
     Ok(())
 }
@@ -364,7 +379,9 @@ fn set_array<V: Pod>(
 /// until a policy is committed again, or for good if that start fails.
 pub fn clear_daemon_tgid(ebpf: &mut Ebpf) -> Result<()> {
     let mut config: Array<_, u32> = Array::try_from(ebpf.map_mut("CONFIG").context("CONFIG")?)?;
-    config.set(CFG_DAEMON_TGID, 0, 0).context("clearing the daemon's tgid")?;
+    config
+        .set(CFG_DAEMON_TGID, 0, 0)
+        .context("clearing the daemon's tgid")?;
     Ok(())
 }
 
@@ -386,30 +403,43 @@ fn sync_map<K: Pod + Eq + Hash, V: Pod + PartialEq>(
     undo: &mut Undo,
 ) -> Result<bool> {
     let cap = capacity(ebpf, name)?;
-    let mut map: BpfHashMap<_, K, V> =
-        BpfHashMap::try_from(ebpf.map_mut(name).with_context(|| format!("{name} missing"))?)?;
+    let mut map: BpfHashMap<_, K, V> = BpfHashMap::try_from(
+        ebpf.map_mut(name)
+            .with_context(|| format!("{name} missing"))?,
+    )?;
     let inserts: Vec<(K, V)> = want
         .iter()
         .filter(|(k, v)| have.get(*k) != Some(*v))
         .map(|(k, v)| (*k, *v))
         .collect();
-    let stale: Vec<K> = have.keys().filter(|k| !want.contains_key(*k)).copied().collect();
+    let stale: Vec<K> = have
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .copied()
+        .collect();
     // Inserts first, so a replaced exe stays known throughout, unless the
     // map can't hold the old and the new entries at once.
-    let new_keys = inserts.iter().filter(|(k, _)| !have.contains_key(k)).count();
+    let new_keys = inserts
+        .iter()
+        .filter(|(k, _)| !have.contains_key(k))
+        .count();
     let removes_first = have.len() + new_keys > cap;
     for inserting in [!removes_first, removes_first] {
         if inserting {
             for (k, v) in &inserts {
-                map.insert(k, v, 0).with_context(|| format!("updating {name}"))?;
+                map.insert(k, v, 0)
+                    .with_context(|| format!("updating {name}"))?;
                 let (k, old) = (*k, have.insert(*k, *v));
-                undo.0.push(Box::new(move |ebpf: &mut Ebpf| restore(ebpf, name, k, old)));
+                undo.0
+                    .push(Box::new(move |ebpf: &mut Ebpf| restore(ebpf, name, k, old)));
             }
         } else {
             for k in &stale {
-                map.remove(k).with_context(|| format!("removing from {name}"))?;
+                map.remove(k)
+                    .with_context(|| format!("removing from {name}"))?;
                 let (k, old) = (*k, have.remove(k));
-                undo.0.push(Box::new(move |ebpf: &mut Ebpf| restore(ebpf, name, k, old)));
+                undo.0
+                    .push(Box::new(move |ebpf: &mut Ebpf| restore(ebpf, name, k, old)));
             }
         }
     }
@@ -426,8 +456,8 @@ impl State {
         } else {
             IdTable::default()
         };
-        let (policy, policy_warnings) = load_policy(&opts, &ids, color)
-            .map_err(|d| anyhow!("the policy has errors:\n{d}"))?;
+        let (policy, policy_warnings) =
+            load_policy(&opts, &ids, color).map_err(|d| anyhow!("the policy has errors:\n{d}"))?;
         let (users, resolved, warnings) = resolve_all(&policy).map_err(|e| anyhow!(e))?;
         let now = SystemTime::now();
         let mut state = Self {
@@ -500,7 +530,10 @@ impl State {
         }
         let tmp = path.with_extension("new");
         if let Err(e) = fs::write(&tmp, &text).and_then(|()| fs::rename(&tmp, &path)) {
-            eprintln!("explsmd: warning: saving app ids to {}: {e}", path.display());
+            eprintln!(
+                "explsmd: warning: saving app ids to {}: {e}",
+                path.display()
+            );
         }
     }
 
@@ -533,7 +566,12 @@ impl State {
         };
         let (users, resolved, warnings) = match resolve_all(&policy) {
             Ok(r) => r,
-            Err(e) => return fail("the policy does not resolve; the old policy stays in force", e),
+            Err(e) => {
+                return fail(
+                    "the policy does not resolve; the old policy stays in force",
+                    e,
+                );
+            }
         };
         let old_warnings = std::mem::replace(&mut self.policy_warnings, policy_warnings);
         if let Err(e) = self.commit(policy, users, resolved, warnings) {
@@ -572,7 +610,10 @@ impl State {
         resolved: Resolved,
         mut warnings: Vec<String>,
     ) -> Result<(), Failed> {
-        let refused = |error| Failed { error, restored: true };
+        let refused = |error| Failed {
+            error,
+            restored: true,
+        };
         let mut old_roots = HashMap::new();
         for (k, r) in &self.roots {
             old_roots.insert(*k, r.dup().map_err(|e| refused(e.into()))?);
@@ -620,12 +661,14 @@ impl State {
         self.writable_exes = plan.writable_exes;
         self.claim_parents = plan.claim_parents_by_key;
         // The policy is in force; a process not seeded is reported.
-        if self.seeding && !plan.new_exes.is_empty()
+        if self.seeding
+            && !plan.new_exes.is_empty()
             && let Err(e) = self.seed(&plan.new_exes)
         {
             eprintln!("explsmd: warning: seeding the new exes' processes: {e:#}");
         }
-        if self.seeding && plan.new_terminals
+        if self.seeding
+            && plan.new_terminals
             && let Err(e) = self.seed_terminals()
         {
             eprintln!("explsmd: warning: seeding processes below terminals: {e:#}");
@@ -651,10 +694,18 @@ impl State {
             show("-", "exe ", f);
         }
         for f in new.terminals.iter().filter(|f| !old.terminals.contains(f)) {
-            eprintln!("explsmd: + terminal {} ({})", f.path.display(), show_key(&f.key));
+            eprintln!(
+                "explsmd: + terminal {} ({})",
+                f.path.display(),
+                show_key(&f.key)
+            );
         }
         for f in old.terminals.iter().filter(|f| !new.terminals.contains(f)) {
-            eprintln!("explsmd: - terminal {} ({})", f.path.display(), show_key(&f.key));
+            eprintln!(
+                "explsmd: - terminal {} ({})",
+                f.path.display(),
+                show_key(&f.key)
+            );
         }
         for m in new.missing.iter().filter(|m| !old.missing.contains(m)) {
             eprintln!(
@@ -713,7 +764,10 @@ impl State {
                     );
                 }
                 // Replaced since it was resolved; the watch brings it back.
-                Ok(_) => eprintln!("explsmd: warning: {} changed while resolving", f.path.display()),
+                Ok(_) => eprintln!(
+                    "explsmd: warning: {} changed while resolving",
+                    f.path.display()
+                ),
                 Err(e) => eprintln!("explsmd: warning: opening {}: {e}", f.path.display()),
             }
         }
@@ -819,7 +873,10 @@ impl State {
             .exes
             .iter()
             .map(|f| (f.key, f.app, f.path.clone()))
-            .chain(resolve::file_key(&self.opts.agent).map(|k| (k, APP_AGENT, self.opts.agent.clone())));
+            .chain(
+                resolve::file_key(&self.opts.agent)
+                    .map(|k| (k, APP_AGENT, self.opts.agent.clone())),
+            );
         for (key, app, path) in apps {
             let mut paths = vec![path.clone()];
             if let Ok(real) = fs::canonicalize(&path)
@@ -854,7 +911,11 @@ impl State {
                     "explsmd:   exe {} of {} is user-writable: protected as its data{}",
                     path.display(),
                     policy.name(app),
-                    if lock_dir { "" } else { " (its shared directory is not locked)" }
+                    if lock_dir {
+                        ""
+                    } else {
+                        " (its shared directory is not locked)"
+                    }
                 );
             }
             writable_exes.insert(key, path);
@@ -873,7 +934,14 @@ impl State {
         // An object too deep to find its owner may be the data of any app,
         // so it is guarded as soon as one app is.
         let any_enforced = modes.values().any(|&m| m == MODE_ENFORCE);
-        modes.insert(OWNER_UNKNOWN, if any_enforced { MODE_ENFORCE } else { MODE_AUDIT });
+        modes.insert(
+            OWNER_UNKNOWN,
+            if any_enforced {
+                MODE_ENFORCE
+            } else {
+                MODE_AUDIT
+            },
+        );
         // explsm's own processes and files are always guarded: tampering
         // with the agent would let a process answer its own prompts.
         modes.insert(APP_AGENT, MODE_ENFORCE);
@@ -939,19 +1007,42 @@ impl State {
     /// Bring the maps to `plan`, all or nothing: every map is first checked
     /// to hold what it must, and a write that fails is undone.
     fn write(&mut self, policy: &Compiled, plan: &Plan) -> Result<(), Failed> {
-        let refused = |error| Failed { error, restored: true };
+        let refused = |error| Failed {
+            error,
+            restored: true,
+        };
         // The BPF side adds roots too (a root replaced by a rename), so the
         // map, not what was last written, is what is applied.
         let roots_now = read_map(&self.ebpf, "ROOTS").map_err(refused)?;
         let sizes = [
             ("EXES", plan.exes.len(), "app exes"),
-            ("ROOTS", plan.roots.len(), "protected roots, hard-linked files and own files"),
+            (
+                "ROOTS",
+                plan.roots.len(),
+                "protected roots, hard-linked files and own files",
+            ),
             ("GRANTS", policy.grants.len(), "grants"),
             ("TERMINALS", plan.terminals.len(), "terminal exes"),
-            ("CLAIM_PARENTS", plan.claim_parents.len(), "auto-claim folders"),
-            ("EXE_DIRS", plan.exe_dirs.len(), "directories of user-writable exes"),
-            ("EXE_PATHS", plan.exe_paths.len(), "directories above user-writable exes"),
-            ("ALLOWED_ENV", plan.allowed_env.len(), "allowed loader variables"),
+            (
+                "CLAIM_PARENTS",
+                plan.claim_parents.len(),
+                "auto-claim folders",
+            ),
+            (
+                "EXE_DIRS",
+                plan.exe_dirs.len(),
+                "directories of user-writable exes",
+            ),
+            (
+                "EXE_PATHS",
+                plan.exe_paths.len(),
+                "directories above user-writable exes",
+            ),
+            (
+                "ALLOWED_ENV",
+                plan.allowed_env.len(),
+                "allowed loader variables",
+            ),
         ];
         let mut full = Vec::new();
         for (name, len, what) in sizes {
@@ -970,8 +1061,10 @@ impl State {
             return Err(refused(anyhow!(
                 "the policy does not fit in the maps; nothing was written:
 {}",
-                full.join("
-")
+                full.join(
+                    "
+"
+                )
             )));
         }
 
@@ -1014,7 +1107,13 @@ impl State {
         let roots_changed = sync_map(ebpf, "ROOTS", &plan.roots, &mut a.roots, undo)?;
         sync_map(ebpf, "GRANTS", &policy.grants, &mut a.grants, undo)?;
         sync_map(ebpf, "TERMINALS", &plan.terminals, &mut a.terminals, undo)?;
-        sync_map(ebpf, "CLAIM_PARENTS", &plan.claim_parents, &mut a.claim_parents, undo)?;
+        sync_map(
+            ebpf,
+            "CLAIM_PARENTS",
+            &plan.claim_parents,
+            &mut a.claim_parents,
+            undo,
+        )?;
         sync_map(ebpf, "EXE_DIRS", &plan.exe_dirs, &mut a.exe_dirs, undo)?;
         sync_map(ebpf, "EXE_PATHS", &plan.exe_paths, &mut a.exe_paths, undo)?;
         for (app, mode) in &plan.modes {
@@ -1029,7 +1128,13 @@ impl State {
                 a.app_flags.insert(*app, *flags);
             }
         }
-        sync_map(ebpf, "ALLOWED_ENV", &plan.allowed_env, &mut a.allowed_env, undo)?;
+        sync_map(
+            ebpf,
+            "ALLOWED_ENV",
+            &plan.allowed_env,
+            &mut a.allowed_env,
+            undo,
+        )?;
         if roots_changed {
             // Cached owners were computed against the old roots. Racing
             // with a bump from BPF is fine: both only increment.
@@ -1148,7 +1253,13 @@ impl State {
 
     /// Only the daemon may get file descriptors for these objects.
     pub fn set_own_ids(&mut self, ids: &HashMap<OwnKey, u32>) -> Result<()> {
-        sync_map(&mut self.ebpf, "OWN_IDS", ids, &mut self.applied.own_ids, &mut Undo::default())?;
+        sync_map(
+            &mut self.ebpf,
+            "OWN_IDS",
+            ids,
+            &mut self.applied.own_ids,
+            &mut Undo::default(),
+        )?;
         Ok(())
     }
 
@@ -1314,7 +1425,9 @@ impl State {
     }
 
     /// Directories with paths of the policy, for the watcher.
-    pub fn watches(&self) -> &std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>> {
+    pub fn watches(
+        &self,
+    ) -> &std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>> {
         &self.resolved.watches
     }
 

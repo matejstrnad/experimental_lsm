@@ -117,7 +117,15 @@ pub fn resolve(policy: &Compiled, users: &[User]) -> Result<Resolved, Vec<String
     }
     for pat in &policy.terminals {
         for path in pat.expand(users) {
-            resolve_one(policy, APP_UNCONFINED, Kind::Terminal, pat, &path, &mut out, &mut errors);
+            resolve_one(
+                policy,
+                APP_UNCONFINED,
+                Kind::Terminal,
+                pat,
+                &path,
+                &mut out,
+                &mut errors,
+            );
         }
     }
     for t in &out.terminals {
@@ -274,10 +282,8 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "explsm-resolve-{name}-{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("explsm-resolve-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -347,7 +353,10 @@ mod tests {
         let missing: Vec<_> = r.missing.iter().map(|m| (m.path.clone(), m.kind)).collect();
         assert_eq!(
             missing,
-            [(d.join("none"), Kind::Exe), (home.join(".b/deep"), Kind::Root)]
+            [
+                (d.join("none"), Kind::Exe),
+                (home.join(".b/deep"), Kind::Root)
+            ]
         );
         let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
         assert_eq!(r.watches[&d.join("versions")], set(&["2.0", "[0-9]*"]));

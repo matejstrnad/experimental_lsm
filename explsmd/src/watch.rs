@@ -165,7 +165,11 @@ pub fn wanted(resolved: &BTreeMap<PathBuf, BTreeSet<String>>, policy_dir: &Path)
     out.entry("/etc".into())
         .or_default()
         .insert(("passwd".into(), Purpose::Resolve));
-    let (dir, pattern) = match (policy_dir.is_dir(), policy_dir.parent(), policy_dir.file_name()) {
+    let (dir, pattern) = match (
+        policy_dir.is_dir(),
+        policy_dir.parent(),
+        policy_dir.file_name(),
+    ) {
         (false, Some(parent), Some(name)) => (
             parent.to_path_buf(),
             glob::Pattern::escape(&name.to_string_lossy()),
@@ -175,7 +179,9 @@ pub fn wanted(resolved: &BTreeMap<PathBuf, BTreeSet<String>>, policy_dir: &Path)
             format!("*.{}", explsm_policy::EXTENSION),
         ),
     };
-    out.entry(dir).or_default().insert((pattern, Purpose::Policy));
+    out.entry(dir)
+        .or_default()
+        .insert((pattern, Purpose::Policy));
     out
 }
 

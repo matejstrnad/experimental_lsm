@@ -566,7 +566,10 @@ mod tests {
         let reindented = BPF.replace("\t__uint(", "    __uint(");
         assert_eq!(layout_version(HEADER, &reindented), base);
         // The programs are not the layout.
-        let code = BPF.replace("bump(STAT_CHECKS);", "bump(STAT_CHECKS); bump(STAT_CHECKS);");
+        let code = BPF.replace(
+            "bump(STAT_CHECKS);",
+            "bump(STAT_CHECKS); bump(STAT_CHECKS);",
+        );
         assert_ne!(code, BPF);
         assert_eq!(layout_version(HEADER, &code), base);
     }
@@ -574,7 +577,11 @@ mod tests {
     #[test]
     fn layout_version_follows_the_maps() {
         let base = layout_version(HEADER, BPF);
-        let bigger = BPF.replacen("__uint(max_entries, 4096);", "__uint(max_entries, 8192);", 1);
+        let bigger = BPF.replacen(
+            "__uint(max_entries, 4096);",
+            "__uint(max_entries, 8192);",
+            1,
+        );
         assert_ne!(bigger, BPF);
         assert_ne!(layout_version(HEADER, &bigger), base);
         let epoch = HEADER.replace("#define LAYOUT_EPOCH 1", "#define LAYOUT_EPOCH 2");

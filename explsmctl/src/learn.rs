@@ -78,7 +78,10 @@ fn plural(n: usize) -> &'static str {
 }
 
 /// Grantable records by `key`, and the others counted per kind.
-type Tally<'a> = (BTreeMap<&'a str, Seen>, BTreeMap<(&'static str, &'static str), usize>);
+type Tally<'a> = (
+    BTreeMap<&'a str, Seen>,
+    BTreeMap<(&'static str, &'static str), usize>,
+);
 
 fn tally<'a>(records: &'a [Record], key: impl Fn(&'a Record) -> &'a str) -> Tally<'a> {
     let mut by_key: BTreeMap<&str, Seen> = BTreeMap::new();
@@ -109,7 +112,12 @@ fn tally<'a>(records: &'a [Record], key: impl Fn(&'a Record) -> &'a str) -> Tall
 fn skipped_lines(skipped: &BTreeMap<(&str, &str), usize>) -> String {
     skipped
         .iter()
-        .map(|((kind, what), n)| format!("# {n} {kind} event{} can't be granted ({what})\n", plural(*n)))
+        .map(|((kind, what), n)| {
+            format!(
+                "# {n} {kind} event{} can't be granted ({what})\n",
+                plural(*n)
+            )
+        })
         .collect()
 }
 
@@ -195,7 +203,11 @@ pub fn suggest(app: &str, records: &[Record]) -> String {
 /// explsm's own files, tampering with apps' processes and the other kinds
 /// `suggest` skips can't be granted to `@root`; they are only counted.
 pub fn suggest_root(records: &[Record]) -> String {
-    let root: Vec<_> = records.iter().filter(|r| r.subject == "root").cloned().collect();
+    let root: Vec<_> = records
+        .iter()
+        .filter(|r| r.subject == "root")
+        .cloned()
+        .collect();
     let (by_owner, skipped) = tally(&root, |r| r.owner.as_str());
     let mut out = String::new();
     for (owner, seen) in &by_owner {
@@ -242,10 +254,16 @@ mod tests {
 {"MESSAGE":"other"}
 not json
 {"EXPLSM_SUBJECT":"unconfined","EXPLSM_NEED":[1,2],"EXPLSM_PROC":"cat"}"#;
-        assert_eq!(parse(json), [rec("backup", "read", "restic", "/h/.ssh/config")]);
+        assert_eq!(
+            parse(json),
+            [rec("backup", "read", "restic", "/h/.ssh/config")]
+        );
 
         let json = r#"{"EXPLSM_ACTION":"bypass","EXPLSM_SUBJECT":"root","EXPLSM_OWNER":"ssh","EXPLSM_NEED":"read","EXPLSM_PROC":"cat","EXPLSM_PATH":"/h/.ssh/id","EXPLSM_TERMINAL":"1"}"#;
-        assert_eq!(parse(json), [root("ssh", "read", "cat", "/h/.ssh/id", true)]);
+        assert_eq!(
+            parse(json),
+            [root("ssh", "read", "cat", "/h/.ssh/id", true)]
+        );
     }
 
     #[test]
@@ -255,7 +273,13 @@ not json
             root("ssh", "read", "cat", "/h/.ssh/config", true),
             root("claude", "list", "updatedb", "/h/.claude", false),
             root("claude", "tamper", "gdb", "target=42", true),
-            root("explsmd", "write", "vim", "/etc/explsm/policy.d/a.explsm", true),
+            root(
+                "explsmd",
+                "write",
+                "vim",
+                "/etc/explsm/policy.d/a.explsm",
+                true,
+            ),
             // Not @root's: an app's root process, and a user's.
             Record {
                 owner: "ssh".into(),
