@@ -90,10 +90,12 @@ pub struct Options {
 }
 
 /// Unit files and bus policy of explsm, protected where they are installed.
-const OWN_FILES: [&str; 9] = [
+const OWN_FILES: [&str; 11] = [
     "/etc/systemd/system/explsmd.service",
     "/usr/lib/systemd/system/explsmd.service",
     "/lib/systemd/system/explsmd.service",
+    "/usr/lib/systemd/system/explsm-gate.service",
+    "/usr/lib/systemd/system/systemd-user-sessions.service.d/explsm-gate.conf",
     "/etc/systemd/user/explsm-agent.service",
     "/usr/lib/systemd/user/explsm-agent.service",
     "/etc/dbus-1/system.d/org.explsm.Daemon1.conf",
@@ -251,6 +253,10 @@ fn read_map<K: Pod + Eq + Hash, V: Pod>(ebpf: &Ebpf, name: &str) -> Result<HashM
         .collect::<Result<_, _>>()
         .with_context(|| format!("reading {name}"))
 }
+
+/// Present while the policy in force has `fail_closed on`. Read at boot by
+/// `explsm-gate.service`, which then holds logins until explsmd is up.
+pub const FAIL_CLOSED_FILE: &str = "fail-closed";
 
 fn ids_file(state_dir: &Path) -> PathBuf {
     state_dir.join("ids")
@@ -488,6 +494,22 @@ impl State {
         }
     }
 
+    /// Leave the next boot a note of `fail_closed`.
+    fn mark_fail_closed(&self) {
+        let path = self.opts.state_dir.join(FAIL_CLOSED_FILE);
+        let result = if self.policy.fail_closed {
+            fs::write(&path, "logins wait for explsmd at boot (fail_closed on)\n")
+        } else {
+            match fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        };
+        if let Err(e) = result {
+            eprintln!("explsmd: warning: {}: {e}", path.display());
+        }
+    }
+
     /// Read the policy again and apply it. On errors the old policy stays.
     pub fn reload(&mut self) -> ReloadReply {
         let fail = |summary: &str, diagnostics: String| ReloadReply {
@@ -582,6 +604,7 @@ impl State {
         self.warnings = warnings;
         self.resolved_at = SystemTime::now();
         self.save_ids();
+        self.mark_fail_closed();
         self.label_roots();
         self.linked = plan.linked;
         self.writable_exes = plan.writable_exes;

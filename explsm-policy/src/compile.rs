@@ -264,6 +264,9 @@ fn check_env(var: &Spanned<String>) -> Result<(), Diagnostic> {
 #[derive(Clone, Debug)]
 pub struct Compiled {
     pub root_bypass: bool,
+    /// `fail_closed on`: logins wait for explsmd at boot (see
+    /// `packaging/explsm-gate.service`).
+    pub fail_closed: bool,
     /// `users …`: names or uids. `None`: every regular user.
     pub users: Option<Vec<Spanned<String>>>,
     pub apps: Vec<App>,
@@ -360,6 +363,7 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let mut diags = Vec::new();
     let mut ids = ids.clone();
     let mut root_bypass: Option<&Spanned<bool>> = None;
+    let mut fail_closed: Option<&Spanned<bool>> = None;
     let mut users: Option<&Spanned<Vec<Spanned<String>>>> = None;
     let mut apps: Vec<App> = Vec::new();
     let mut app_spans: HashMap<&str, Span> = HashMap::new();
@@ -377,6 +381,15 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     );
                 }
                 root_bypass = Some(v);
+            }
+            Item::FailClosed(v) => {
+                if let Some(first) = fail_closed {
+                    diags.push(
+                        Diagnostic::error(v.span, "`fail_closed` is set twice")
+                            .also(first.span, "first set here"),
+                    );
+                }
+                fail_closed = Some(v);
             }
             Item::Users(u) => {
                 if let Some(first) = users {
@@ -502,6 +515,7 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     }
     Ok(Compiled {
         root_bypass: root_bypass.is_none_or(|v| v.value),
+        fail_closed: fail_closed.is_some_and(|v| v.value),
         users: users.map(|u| u.value.clone()),
         apps,
         grants,
@@ -659,6 +673,7 @@ mod tests {
             "#,
         );
         assert!(!c.root_bypass);
+        assert!(!c.fail_closed);
         assert_eq!(c.apps[0].mode, Mode::Enforce);
         assert_eq!(c.apps[1].mode, Mode::Audit);
         assert_eq!(c.name(2), "backup");
@@ -809,8 +824,8 @@ mod tests {
         assert_eq!(long.len(), 127);
         assert_eq!(env(&long), ["`env` strings have at most 126 bytes"]);
         assert_eq!(
-            errors("root_bypass on\nroot_bypass off\nusers a\nusers b"),
-            ["`root_bypass` is set twice", "`users` is given twice"]
+            errors("root_bypass on\nroot_bypass off\nusers a\nusers b\nfail_closed on\nfail_closed off"),
+            ["`root_bypass` is set twice", "`users` is given twice", "`fail_closed` is set twice"]
         );
         let grant = |g: &str| errors(&format!("{}grant {g}", app("a")));
         assert_eq!(grant("b read to a"), ["unknown app `b`"]);
@@ -859,6 +874,12 @@ mod tests {
             .map(|i| format!("app a{i} {{ exe \"/a\" }}\n"))
             .collect();
         assert_eq!(errors(&text), ["too many apps: at most 252 per daemon run"]);
+    }
+
+    #[test]
+    fn fail_closed() {
+        assert!(compiled("fail_closed on").fail_closed);
+        assert!(!compiled("fail_closed off").fail_closed);
     }
 
     #[test]

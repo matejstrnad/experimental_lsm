@@ -4,7 +4,7 @@
 # the directories above them, atomic saves of an owned file, forced truncates,
 # pinning (explsm stays loaded when the daemon exits, the next one takes
 # over, a start that fails leaves the earlier pins or none, unload removes
-# it), the bpf() restrictions and explsm's own files.
+# it), the fail_closed note, the bpf() restrictions and explsm's own files.
 #
 # Runs explsmd from a copy in a throwaway sandbox in /var/tmp, pinned in
 # /sys/fs/bpf/explsm-smoke5 (not the real pin directory). Must run as root;
@@ -126,6 +126,16 @@ check "baseline: nobody reads the secret with the owner's cat" $? ""
 
 start
 check "the pin directory exists" "$([[ -e $PIN/link-file_open && -e $PIN/ROOTS ]]; echo $?)" "$(ls "$PIN" 2>&1)"
+
+# --- fail_closed ----------------------------------------------------------------
+check "no fail-closed note without fail_closed" "$([[ ! -e $DIR/state/fail-closed ]]; echo $?)" ""
+cp "$DIR/policy.explsm" "$DIR/policy.saved"
+echo "fail_closed on" >> "$DIR/policy.explsm"
+: > "$ERR"; kill -HUP "$daemon"; wait_err "policy reloaded"
+check "fail_closed on leaves the note for the boot gate" "$([[ -e $DIR/state/fail-closed ]]; echo $?)" "$(tail -3 "$ERR")"
+cat "$DIR/policy.saved" > "$DIR/policy.explsm"
+: > "$ERR"; kill -HUP "$daemon"; wait_err "policy reloaded"
+check "fail_closed off removes it" "$([[ ! -e $DIR/state/fail-closed ]]; echo $?)" "$(tail -3 "$ERR")"
 
 # --- loader variables ----------------------------------------------------------
 emark

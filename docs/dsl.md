@@ -172,6 +172,19 @@ auto-claims; they can be written by hand too.
 `on` (the default): processes with fsuid 0 bypass every check except label
 changes and `EXDEV`. `explsmd --no-root-bypass` turns it off regardless.
 
+### `fail_closed on|off`
+
+`off` (the default): if explsmd fails to start at boot, users log in
+unprotected; their explsm-agent tells them explsm is not running, at login
+and whenever explsmd leaves the bus. `on`: no user may log in until explsmd
+is running. explsmd notes this in `/var/lib/explsm/fail-closed` once the
+policy is in force, and at the next boot `explsm-gate.service` (required by
+`systemd-user-sessions.service`) fails if explsmd is not active, which
+keeps `/run/nologin`: only root may log in. Fix explsmd, then `systemctl
+start systemd-user-sessions`; or boot with `explsm=off`, which skips the
+gate. It takes effect at the next boot, and stays as the last policy in
+force left it. Turn it off before disabling explsmd.
+
 ### `users NAME_OR_UID, …`
 
 The users `~/` paths are expanded for. Without it: every user in

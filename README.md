@@ -84,10 +84,15 @@ It installs:
 | | |
 |---|---|
 | `/usr/sbin/explsmd` | the daemon, `explsmd.service`, enabled at boot |
+| `explsm-gate.service` | holds logins until explsmd runs, with `fail_closed on` |
 | `/usr/bin/explsmctl` | the CLI |
 | `/usr/libexec/explsm-agent` | the prompt agent, a user service in every graphical session |
 | `/etc/explsm/policy.d/` | the policy, **empty**: put your `*.explsm` files here |
 | `/usr/share/doc/explsm/` | these docs and `examples/ssh.explsm` |
+
+If explsmd fails to start, users log in unprotected by default, and each
+user's agent says explsm is not running; with `fail_closed on` in the policy
+(see [docs/dsl.md](docs/dsl.md)) only root may log in until it runs.
 
 explsmd starts before anyone can log in (`Before=systemd-user-sessions.service`),
 with a nice level of -10, the highest best-effort I/O priority and an OOM
@@ -178,7 +183,8 @@ prompts or reloads), and the next explsmd takes over.
   press Esc (UEFI) while booting, press `e` on the entry and add `explsm=off`
   to the `linux` line. Recovery mode works too: `rescue.target` doesn't start
   explsmd.
-- `sudo systemctl disable explsmd` to keep it off after the next boot.
+- `sudo systemctl disable explsmd` to keep it off after the next boot
+  (`fail_closed off` first, or only root can log in).
 
 **Upgrading explsmd:** the package unloads explsm before an upgrade and
 starts the new version after it. By hand: install the new binary at the same

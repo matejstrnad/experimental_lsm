@@ -149,11 +149,12 @@ fn check(
     let color = std::io::stderr().is_terminal();
     eprint!("{}", diag::render(&policy.warnings, &sources, color));
     println!(
-        "policy ok: {} files, {} apps, {} grants, root bypass {}",
+        "policy ok: {} files, {} apps, {} grants, root bypass {}{}",
         sources.0.len(),
         policy.apps.len(),
         policy.grants.len(),
-        if policy.root_bypass { "on" } else { "off" }
+        if policy.root_bypass { "on" } else { "off" },
+        if policy.fail_closed { ", fail closed" } else { "" }
     );
     if !resolve {
         return Ok(ExitCode::SUCCESS);

@@ -1,0 +1,22 @@
+[Unit]
+Description=explsm fail-closed gate (no user logins until explsmd runs)
+Documentation=file:///usr/share/doc/explsm/dsl.md
+# Only while the policy last loaded has `fail_closed on`: explsmd keeps this
+# file then. Booting with `explsm=off` skips the gate as it skips explsmd.
+ConditionPathExists=/var/lib/explsm/fail-closed
+ConditionKernelCommandLine=!explsm=off
+After=explsmd.service
+# systemd-user-sessions.service requires this unit (drop-in
+# explsm-gate.conf): if the gate fails, /run/nologin stays and only root
+# can log in. `systemctl start systemd-user-sessions` lets users in once
+# explsmd runs.
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Neither Requires= nor Wants= on explsmd: the gate must not stop (and close
+# logins) when explsmd stops later, while the pinned programs go on
+# enforcing, nor start an explsmd that was disabled. A disabled explsmd
+# fails the gate.
+ExecStart=/usr/bin/systemctl is-active --quiet explsmd.service

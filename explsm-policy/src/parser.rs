@@ -8,8 +8,10 @@ use crate::{
     lexer::{Tok, lex},
 };
 
-const TOP_LEVEL: [&str; 6] = ["app", "grant", "claim", "terminal", "root_bypass", "users"];
-const EXPECTED_TOP: &str = "`app`, `grant`, `claim`, `terminal`, `root_bypass` or `users`";
+const TOP_LEVEL: [&str; 7] =
+    ["app", "grant", "claim", "terminal", "root_bypass", "fail_closed", "users"];
+const EXPECTED_TOP: &str =
+    "`app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed` or `users`";
 const APP_BODY: [&str; 5] = ["exe", "owns", "mode", "inherit", "env"];
 const EXPECTED_APP: &str = "`exe`, `owns`, `mode`, `inherit`, `env` or `}`";
 
@@ -107,6 +109,22 @@ impl Parser {
         }
     }
 
+    fn on_off(&mut self) -> PResult<Spanned<bool>> {
+        let v = self.word("`on` or `off`")?;
+        let value = match v.value.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => {
+                self.pos -= 1;
+                return Err(self.unexpected("`on` or `off`"));
+            }
+        };
+        Ok(Spanned {
+            value,
+            span: v.span,
+        })
+    }
+
     fn string(&mut self, expected: &str) -> PResult<Spanned<String>> {
         match self.peek() {
             Some(Tok::Str(s)) => {
@@ -176,21 +194,8 @@ impl Parser {
                 let paths = self.list(|p| p.string("a path"))?;
                 Ok(Item::Claim(Claim { app, paths }))
             }
-            "root_bypass" => {
-                let v = self.word("`on` or `off`")?;
-                let on = match v.value.as_str() {
-                    "on" => true,
-                    "off" => false,
-                    _ => {
-                        self.pos -= 1;
-                        return Err(self.unexpected("`on` or `off`"));
-                    }
-                };
-                Ok(Item::RootBypass(Spanned {
-                    value: on,
-                    span: v.span,
-                }))
-            }
+            "root_bypass" => self.on_off().map(Item::RootBypass),
+            "fail_closed" => self.on_off().map(Item::FailClosed),
             "users" => {
                 let users = self.list(|p| p.word("a user name or uid"))?;
                 let span = join(kw.span, self.prev_span());
@@ -396,7 +401,7 @@ mod tests {
         assert_eq!(
             e,
             [
-                "expected `app`, `grant`, `claim`, `terminal`, `root_bypass` or `users`, found `bogus`",
+                "expected `app`, `grant`, `claim`, `terminal`, `root_bypass`, `fail_closed` or `users`, found `bogus`",
                 "expected `exe`, `owns`, `mode`, `inherit`, `env` or `}`, found `frobnicate`",
                 "grant without permissions",
                 "expected `on` or `off`, found `maybe`",

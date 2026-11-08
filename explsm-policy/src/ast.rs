@@ -14,6 +14,8 @@ pub struct Policy {
 pub enum Item {
     /// `root_bypass on|off`
     RootBypass(Spanned<bool>),
+    /// `fail_closed on|off`
+    FailClosed(Spanned<bool>),
     /// `users 1000, alice`
     Users(Spanned<Vec<Spanned<String>>>),
     App(App),

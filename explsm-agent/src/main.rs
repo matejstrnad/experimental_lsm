@@ -9,6 +9,10 @@
 //! changes nothing (the access stays denied). When explsmd restarts, the
 //! agent registers again.
 //!
+//! When explsmd is not on the bus at login, or leaves it, the user is told
+//! with a notification that stays until explsmd is back: a start that
+//! failed at boot would otherwise leave the machine unprotected unnoticed.
+//!
 //! Built with the `test-answer` feature (smoke tests only), `--answer CHOICE`
 //! answers every prompt with CHOICE (or `deny`/`decline` where CHOICE is not
 //! offered) and shows nothing. An installed agent must not have it: explsmd
@@ -195,6 +199,24 @@ async fn next_of<S: Stream + Unpin>(s: &mut Option<S>) -> Option<S::Item> {
     }
 }
 
+/// Tell the user explsmd is not running; returns the notification's id.
+async fn daemon_down(n: &NotificationsProxy<'_>) -> Option<u32> {
+    let body = "explsmd is not running, so no prompts are shown and new exes and folders \
+                are not protected. If it did not start at boot, nothing is protected. \
+                See <tt>systemctl status explsmd</tt>.";
+    let hints = HashMap::from([("urgency", Variant::U8(2)), ("resident", Variant::Bool(true))]);
+    match n
+        .notify("explsm", 0, "security-low", "explsm is not running", body, &[], hints, 0)
+        .await
+    {
+        Ok(nid) => Some(nid),
+        Err(e) => {
+            eprintln!("explsm-agent: showing that explsmd is not running: {e}");
+            None
+        }
+    }
+}
+
 async fn register(manager: &AgentManagerProxy<'_>) -> Result<()> {
     manager
         .register()
@@ -214,8 +236,8 @@ async fn main() -> Result<()> {
         .await
         .context("connecting to the system bus")?;
     let manager = AgentManagerProxy::new(&system).await?;
-    let mut daemon_changes = fdo::DBusProxy::new(&system)
-        .await?
+    let bus = fdo::DBusProxy::new(&system).await?;
+    let mut daemon_changes = bus
         .receive_name_owner_changed_with_args(&[(0, BUS_NAME)])
         .await?;
     // explsmd may not be up yet; it is registered with once it appears.
@@ -240,6 +262,18 @@ async fn main() -> Result<()> {
         Some(n) => Some(n.receive_notification_closed().await?),
         None => None,
     };
+    // Shown while explsmd is not on the bus.
+    let mut down = None;
+    let up = bus
+        .name_has_owner(BUS_NAME.try_into().expect("valid name"))
+        .await
+        .unwrap_or(false);
+    if !up {
+        eprintln!("explsm-agent: explsmd is not running");
+        if let Some(n) = &notifier {
+            down = daemon_down(n).await;
+        }
+    }
     // Notification id → prompt id, and back.
     let mut shown: HashMap<u32, u64> = HashMap::new();
     let mut by_prompt: HashMap<u64, u32> = HashMap::new();
@@ -301,9 +335,11 @@ async fn main() -> Result<()> {
                 }
             }
             Some(sig) = next_of(&mut closed) => {
-                if let Ok(args) = sig.args()
-                    && let Some(id) = shown.remove(&args.id)
-                {
+                let Ok(args) = sig.args() else { continue };
+                if down == Some(args.id) {
+                    down = None;
+                }
+                if let Some(id) = shown.remove(&args.id) {
                     by_prompt.remove(&id);
                 }
             }
@@ -318,8 +354,18 @@ async fn main() -> Result<()> {
                     }
                     shown.clear();
                     by_prompt.clear();
+                    if let (Some(nid), Some(n)) = (down.take(), &notifier) {
+                        let _ = n.close_notification(nid).await;
+                    }
                     if let Err(e) = register(&manager).await {
                         eprintln!("explsm-agent: {e:#}");
+                    }
+                } else {
+                    eprintln!("explsm-agent: explsmd left the bus");
+                    if let Some(n) = &notifier
+                        && down.is_none()
+                    {
+                        down = daemon_down(n).await;
                     }
                 }
             }
