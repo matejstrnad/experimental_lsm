@@ -32,6 +32,9 @@ echo outside > "$O/file"
 DEEP=$E/deep$(printf '/d%.0s' $(seq 60)) # MAX_WALK is 64
 mkdir -p "$DEEP"
 echo deep > "$DEEP/file"
+DEEPER=$O/deeper$(printf '/d%.0s' $(seq 70)) # beyond MAX_WALK, unprotected
+mkdir -p "$DEEPER"
+echo deeper > "$DEEPER/file"
 # Private copies, so their inodes identify the apps without also matching
 # every system binary. Named like the originals for multi-call coreutils.
 for b in cat mv ln bash; do cp "$(type -P $b)" "$OB/$b"; done
@@ -219,6 +222,14 @@ check "root cannot set a label anywhere" $? "rc=$rc $ev"
 run nobody /usr/bin/cat "$DEEP/file"
 denied && has "need=read $DEEP/file\$"
 check "foreign read 60 levels below the root is denied" $? "rc=$rc $ev"
+
+# Beyond MAX_WALK the owner can't be told, so it is "unknown", enforced
+# because an app is, and walked again each time.
+for i in 1 2; do
+    run nobody /usr/bin/cat "$DEEPER/file"
+    denied && has "owner=unknown open\(r\) need=deep\(read\) .*/d/d/file\$"
+    check "read 70 levels deep is denied as unknown (try $i)" $? "rc=$rc $ev"
+done
 
 # --- audit mode ------------------------------------------------------------
 run nobody /usr/bin/cat "$A/file"

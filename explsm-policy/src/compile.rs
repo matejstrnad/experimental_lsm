@@ -7,7 +7,8 @@ use std::{
 
 use explsm_common::{
     APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
-    MAX_GRANTS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, SUBJECT_TERMINAL, app_flag, perm,
+    MAX_GRANTS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, OWNER_UNKNOWN, SUBJECT_TERMINAL,
+    app_flag, perm,
 };
 
 use crate::{
@@ -18,12 +19,13 @@ use crate::{
 };
 
 /// Most app names one daemon run can use: ids `1..=MAX_NAMES`. The ids after
-/// them are reserved: [`OWNER_PINS`], [`APP_DAEMON`] and [`APP_AGENT`].
-pub const MAX_NAMES: usize = OWNER_PINS as usize - 1;
+/// them are reserved: [`OWNER_UNKNOWN`], [`OWNER_PINS`], [`APP_DAEMON`] and
+/// [`APP_AGENT`].
+pub const MAX_NAMES: usize = OWNER_UNKNOWN as usize - 1;
 
 /// Names no app may have: the names of the builtin ids.
-pub const RESERVED_NAMES: [&str; 6] =
-    ["unconfined", "all", "terminal", "explsm-agent", "explsmd", "explsm-pins"];
+pub const RESERVED_NAMES: [&str; 7] =
+    ["unconfined", "all", "terminal", "unknown", "explsm-agent", "explsmd", "explsm-pins"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -75,6 +77,7 @@ impl IdTable {
             APP_AGENT => "explsm-agent",
             APP_DAEMON => "explsmd",
             OWNER_PINS => "explsm-pins",
+            OWNER_UNKNOWN => "unknown",
             _ => self
                 .names
                 .get(id as usize - 1)
@@ -873,7 +876,7 @@ mod tests {
         let text: String = (0..=MAX_NAMES)
             .map(|i| format!("app a{i} {{ exe \"/a\" }}\n"))
             .collect();
-        assert_eq!(errors(&text), ["too many apps: at most 252 per daemon run"]);
+        assert_eq!(errors(&text), ["too many apps: at most 251 per daemon run"]);
     }
 
     #[test]

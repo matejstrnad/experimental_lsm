@@ -368,8 +368,9 @@ static __always_inline void bump_generation(void)
 
 /* Owner of the object at d: walk from d towards the filesystem root and stop
  * at the first root in ROOTS. A negative dentry (an object about to be
- * created) gets its parent's owner. A walk that runs out is treated as
- * unprotected.
+ * created) gets its parent's owner. A walk that runs out may have been on
+ * its way to a root, so the owner is OWNER_UNKNOWN, which nobody but root
+ * with the bypass (and `*` grants) may touch while any app is enforced.
  *
  * Uncached: inode storage only takes trusted inode pointers (hook arguments,
  * file->f_inode), not ones reached through d_inode. */
@@ -389,7 +390,7 @@ static __always_inline app_id walk_owner(struct dentry *d)
 		cur = parent;
 	}
 	bump(STAT_WALK_EXHAUSTED);
-	return APP_UNCONFINED;
+	return OWNER_UNKNOWN;
 }
 
 /* Owner of ino, a trusted inode pointer, whose dentry is d: from the inode
@@ -407,7 +408,9 @@ static __always_inline app_id owner_cached(struct inode *ino, struct dentry *d)
 	app_id owner = walk_owner(d);
 	if (slot) {
 		slot->owner = owner;
-		slot->generation = generation;
+		/* Not cached: the next access walks again, from wherever the
+		 * object is then. A new slot is all zeroes, so mark it stale. */
+		slot->generation = owner == OWNER_UNKNOWN ? generation - 1 : generation;
 	}
 	return owner;
 }
@@ -525,7 +528,7 @@ static __always_inline struct event *new_event(u32 kind, app_id subject,
 	ev->op = 0;
 	ev->perms = 0;
 	ev->action = ACTION_AUDIT;
-	ev->reason = REASON_PERMS;
+	ev->reason = owner == OWNER_UNKNOWN ? REASON_DEEP : REASON_PERMS;
 	ev->flags = 0;
 	ev->file = (struct file_key){};
 	ev->path.kind = PATH_NONE;

@@ -124,6 +124,13 @@ whatever the policy explicitly grants.
   prompt applies to the same app's data of every user.
 - **`@terminal` can be spoofed** by same-user malware that spawns a terminal
   emulator. Prefer prompts or explicit grants for sensitive data.
+- **Very deep trees are guarded blindly.** The owner of an object is found
+  by walking up at most 64 parent directories. An object deeper than that
+  (from its root, or from wherever the walk started outside any root) may be
+  protected data, so its owner is `unknown`: while any app is in enforce
+  mode, only root with the bypass on and `*` grants get through, not even an
+  app on its own data. Such accesses are logged with `need=deep(…)` and
+  can't be granted or prompted for.
 - **Mounts inside a protected tree** and filesystems without stable inode
   numbers (some FUSE, NFS) are not covered by the `d_parent` walk.
 - **Data already copied out** before enforcement started is not protected.

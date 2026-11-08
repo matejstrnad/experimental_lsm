@@ -34,6 +34,12 @@ pub const APP_DAEMON: AppId = MAX_APPS - 2;
 /// may change it; the `@root` bypass does not apply.
 pub const OWNER_PINS: AppId = MAX_APPS - 3;
 
+/// Owner of an object whose `d_parent` walk ran out ([`MAX_WALK`]) before
+/// it reached a root or the filesystem root: it may be protected data.
+/// Enforced if any app is; only `*` grants and root with the bypass get
+/// through. Never cached.
+pub const OWNER_UNKNOWN: AppId = MAX_APPS - 4;
+
 /// Set in a `ROOTS` value: the entry is a user-writable app exe. Anyone may
 /// read (and so run) it, only its app may change it.
 pub const OWNER_EXE: u32 = 1 << 31;
@@ -51,7 +57,7 @@ pub const TF_TERMINAL: u32 = 1;
 pub const TF_TAINTED: u32 = 2;
 
 /// Bounded number of `d_parent` steps when looking for a protected root.
-/// Data more than this many levels below its root is not protected.
+/// An object more levels deep than this is owned by [`OWNER_UNKNOWN`].
 pub const MAX_WALK: u32 = 64;
 
 /// Bytes reserved for a path in an [`Event`], including the trailing NUL.
@@ -190,7 +196,7 @@ pub const CONFIG_LEN: u32 = 5;
 
 /// Value of `CONFIG[CFG_LAYOUT]` this build writes and expects. Bump it when
 /// a map's key, value or meaning changes.
-pub const LAYOUT_VERSION: u32 = 8;
+pub const LAYOUT_VERSION: u32 = 9;
 
 /// Index into the per-CPU `STATS` array map.
 #[repr(u32)]
@@ -202,8 +208,8 @@ pub enum Stat {
     CacheHits = 1,
     /// Cache misses that needed a `d_parent` walk.
     CacheMisses = 2,
-    /// Walks that hit `MAX_WALK` without an answer. Treated (and cached) as
-    /// unprotected.
+    /// Walks that hit `MAX_WALK` without an answer. The object is owned by
+    /// [`OWNER_UNKNOWN`], and not cached.
     WalkExhausted = 3,
     /// Operations on protected data by a subject other than the owner.
     Foreign = 4,
@@ -354,6 +360,9 @@ pub const REASON_TAMPER: u32 = 3;
 pub const REASON_ENV: u32 = 4;
 /// Someone other than the daemon reached for explsm's own BPF objects.
 pub const REASON_SELF: u32 = 5;
+/// The object is too deep to find its owner ([`OWNER_UNKNOWN`]): `perms`
+/// were asked for on what may be protected data.
+pub const REASON_DEEP: u32 = 6;
 
 /// Environment variables that make the dynamic loader run foreign code in a
 /// process. An app exec'd with one of them (non-empty) gets no identity,

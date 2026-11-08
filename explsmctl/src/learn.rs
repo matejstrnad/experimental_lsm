@@ -63,6 +63,7 @@ fn ungrantable(need: &str) -> (&'static str, &'static str) {
             "ptrace, signal, rlimit or exe dir of the app's processes",
         ),
         "self" => ("self", "access to explsm itself"),
+        n if n.starts_with("deep(") => ("deep", "too deep to tell its owner"),
         _ => ("other", "unknown need"),
     }
 }
@@ -185,10 +186,12 @@ not json
             rec("unconfined", "label", "setfattr", "/h/.ssh"),
             rec("ssh", "xdev", "mv", "/h/.ssh/a -> /tmp/a"),
             rec("unconfined", "self", "bpftool", "id=17"),
+            rec("unconfined", "deep(read,write)", "vim", "…/d64/file"),
         ];
         assert_eq!(
             suggest("ssh", &records),
-            "# 1 label event can't be granted (label change)\n\
+            "# 1 deep event can't be granted (too deep to tell its owner)\n\
+             # 1 label event can't be granted (label change)\n\
              # 1 self event can't be granted (access to explsm itself)\n\
              # 2 tamper events can't be granted (ptrace, signal, rlimit or exe dir of the app's processes)\n\
              # 1 xdev event can't be granted (rename or link across owners)\n"

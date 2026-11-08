@@ -16,6 +16,9 @@ typedef u32 app_id;
 #define APP_AGENT (MAX_APPS - 1)
 #define APP_DAEMON (MAX_APPS - 2)
 #define OWNER_PINS (MAX_APPS - 3)
+/* Owner of an object whose d_parent walk ran out before a root or the
+ * filesystem root. Enforced if any app is. */
+#define OWNER_UNKNOWN (MAX_APPS - 4)
 /* Set in a ROOTS value: the entry is a user-writable app exe, which anyone
  * may read (and so run) but only its app may change. */
 #define OWNER_EXE 0x80000000u
@@ -102,6 +105,7 @@ enum op {
 #define REASON_TAMPER 3
 #define REASON_ENV 4
 #define REASON_SELF 5
+#define REASON_DEEP 6
 
 #define ENV_LD_PRELOAD (1 << 0)
 #define ENV_LD_LIBRARY_PATH (1 << 1)

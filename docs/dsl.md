@@ -41,8 +41,8 @@ An application: what identifies it (`exe`) and the data it owns (`owns`).
 | `env "NAME=VALUE", …` | Loader variables the app may be started with. See [`env`](#env-namevalue-). |
 
 App names are words of letters, digits, `_`, `-` and `.`. `unconfined`,
-`all`, `terminal`, `explsm-agent`, `explsmd` and `explsm-pins` are reserved.
-At most 252 different app names can be used until explsm is unloaded: ids are
+`all`, `terminal`, `unknown`, `explsm-agent`, `explsmd` and `explsm-pins` are
+reserved. At most 251 different app names can be used until explsm is unloaded: ids are
 not reused, because running processes keep theirs, and they are kept across
 daemon restarts in `/var/lib/explsm/ids`.
 

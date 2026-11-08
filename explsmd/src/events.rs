@@ -15,6 +15,7 @@
 //! deny   pid=… … subject=unconfined owner=claude rlimit(RLIMIT_CPU) need=tamper target=4242
 //! deny   pid=… … subject=unconfined owner=claude exe_dir need=tamper /home/me/.local/share/claude/versions/x
 //! deny   pid=… … subject=unconfined owner=explsmd bpf(map) need=self id=17
+//! deny   pid=… … subject=unconfined owner=unknown open(r) need=deep(read) …/d63/d64/file
 //! ```
 //!
 //! `exec` lines are only written with `explsmd --log-execs`. `deny` lines
@@ -25,8 +26,8 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
-    ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_ENV,
-    REASON_LABEL, REASON_SELF, REASON_TAMPER, TF_TERMINAL, env_var, own_kind, path_kind, perm,
+    ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
+    REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, TF_TERMINAL, env_var, own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
 
@@ -306,6 +307,11 @@ pub fn render(
         REASON_LABEL => (names.name(ev.owner).to_string(), "label".to_string()),
         REASON_TAMPER => (names.name(ev.owner).to_string(), "tamper".to_string()),
         REASON_SELF => (names.name(ev.owner).to_string(), "self".to_string()),
+        // Too deep to tell whose it is.
+        REASON_DEEP => (
+            names.name(ev.owner).to_string(),
+            format!("deep({})", perm_names(ev.perms)),
+        ),
         _ => (names.name(ev.owner).to_string(), perm_names(ev.perms)),
     };
     // A process, not a path: the target's pid, or the object's id.
@@ -427,6 +433,21 @@ mod tests {
         assert_eq!(field("EXPLSM_OWNER"), Some("ssh"));
         assert_eq!(field("EXPLSM_NEED"), Some("delete"));
         assert_eq!(field("EXPLSM_PATH2"), None);
+
+        ev.owner = explsm_common::OWNER_UNKNOWN;
+        ev.op = Op::Open as u32;
+        ev.perms = perm::READ | perm::WRITE;
+        ev.reason = REASON_DEEP;
+        let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
+        assert!(
+            line.text.contains(" owner=unknown open(r) need=deep(read,write) "),
+            "{}",
+            line.text
+        );
+        ev.owner = 1;
+        ev.op = Op::Unlink as u32;
+        ev.perms = perm::DELETE;
+        ev.reason = REASON_PERMS;
 
         ev.subject = APP_UNCONFINED;
         ev.task_flags = TF_TERMINAL;

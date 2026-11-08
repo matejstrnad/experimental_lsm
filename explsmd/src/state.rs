@@ -38,8 +38,8 @@ use aya::{
 };
 use explsm_common::{
     APP_AGENT, APP_DAEMON, AppId, CFG_DAEMON_TGID, CFG_GENERATION, CFG_LOG_EXECS, CFG_ROOT_BYPASS,
-    DAEMON_PATH_LEN, DaemonPath, EnvKey, FileKey, GrantKey, MODE_ENFORCE, OWNER_EXE, OWNER_PINS, OwnKey,
-    STATS_LEN, TempKey, perm,
+    DAEMON_PATH_LEN, DaemonPath, EnvKey, FileKey, GrantKey, MODE_AUDIT, MODE_ENFORCE, OWNER_EXE,
+    OWNER_PINS, OWNER_UNKNOWN, OwnKey, STATS_LEN, TempKey, perm,
 };
 use explsm_ipc::{AppStatus, FileStatus, GrantStatus, ReloadReply, Status};
 use explsm_policy::{
@@ -860,6 +860,10 @@ impl State {
             }
         }
         let mut modes: HashMap<AppId, u32> = policy.modes().collect();
+        // An object too deep to find its owner may be the data of any app,
+        // so it is guarded as soon as one app is.
+        let any_enforced = modes.values().any(|&m| m == MODE_ENFORCE);
+        modes.insert(OWNER_UNKNOWN, if any_enforced { MODE_ENFORCE } else { MODE_AUDIT });
         // explsm's own processes and files are always guarded: tampering
         // with the agent would let a process answer its own prompts.
         modes.insert(APP_AGENT, MODE_ENFORCE);
