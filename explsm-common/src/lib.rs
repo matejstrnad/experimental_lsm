@@ -16,6 +16,12 @@ pub const OWNER_ANY: AppId = u32::MAX;
 /// App ids are indexes into `MODES`, so they stay below this.
 pub const MAX_APPS: u32 = 256;
 
+/// Entries of `GRANTS`: (subject, owner) pairs the policy grants to.
+pub const MAX_GRANTS: u32 = 4096;
+
+/// Entries of `ALLOWED_ENV`: `env` strings of all apps together.
+pub const MAX_ALLOWED_ENV: u32 = 256;
+
 /// Identity of `explsm-agent`, outside the ids the policy assigns. The
 /// daemon only takes prompt answers from a process with this identity.
 pub const APP_AGENT: AppId = MAX_APPS - 1;

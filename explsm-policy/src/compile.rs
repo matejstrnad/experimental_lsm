@@ -6,8 +6,8 @@ use std::{
 };
 
 use explsm_common::{
-    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MODE_AUDIT, MODE_ENFORCE,
-    OWNER_ANY, OWNER_PINS, SUBJECT_TERMINAL, app_flag, perm,
+    APP_AGENT, APP_DAEMON, APP_UNCONFINED, AppId, ENV_CHUNK, EnvKey, GrantKey, MAX_ALLOWED_ENV,
+    MAX_GRANTS, MODE_AUDIT, MODE_ENFORCE, OWNER_ANY, OWNER_PINS, SUBJECT_TERMINAL, app_flag, perm,
 };
 
 use crate::{
@@ -364,6 +364,8 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
     let mut apps: Vec<App> = Vec::new();
     let mut app_spans: HashMap<&str, Span> = HashMap::new();
     let mut terminals = Vec::new();
+    // The maps the daemon writes them into are of a fixed size.
+    let mut env_count = 0;
 
     for item in &policy.items {
         match item {
@@ -387,6 +389,14 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
             }
             Item::App(a) => {
                 if let Some(app) = compile_app(a, &mut ids, &mut app_spans, &mut diags) {
+                    let before = env_count;
+                    env_count += app.env.len();
+                    if before <= MAX_ALLOWED_ENV as usize && env_count > MAX_ALLOWED_ENV as usize {
+                        diags.push(Diagnostic::error(
+                            a.name.span,
+                            format!("too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps"),
+                        ));
+                    }
                     apps.push(app);
                 }
             }
@@ -426,6 +436,7 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
 
     // Grants after every app, so files may grant to apps of later files.
     let mut grants: HashMap<GrantKey, u32> = HashMap::new();
+    let mut grants_full = false;
     for item in &policy.items {
         let Item::Grant(g) = item else { continue };
         let subject = if g.subject.value.starts_with('@') {
@@ -464,7 +475,18 @@ pub fn compile(policy: &ast::Policy, ids: &IdTable) -> Result<Compiled, Vec<Diag
                     );
                     continue;
                 }
-                *grants.entry(GrantKey { subject, owner }).or_insert(0) |= bits;
+                let key = GrantKey { subject, owner };
+                if !grants.contains_key(&key) && grants.len() == MAX_GRANTS as usize {
+                    if !grants_full {
+                        diags.push(
+                            Diagnostic::error(g.span, format!("too many grants: at most {MAX_GRANTS}"))
+                                .note("grants of the same subject and owner count once"),
+                        );
+                        grants_full = true;
+                    }
+                    continue;
+                }
+                *grants.entry(key).or_insert(0) |= bits;
             }
             (s, o) => diags.extend(
                 s.err()
@@ -837,6 +859,29 @@ mod tests {
             .map(|i| format!("app a{i} {{ exe \"/a\" }}\n"))
             .collect();
         assert_eq!(errors(&text), ["too many apps: at most 252 per daemon run"]);
+    }
+
+    #[test]
+    fn too_many_grants() {
+        let mut text: String = (0..70).map(|i| format!("app a{i} {{ exe \"/a{i}\" }}\n")).collect();
+        for s in 0..70 {
+            for o in (0..70).filter(|o| *o != s) {
+                text.push_str(&format!("grant a{o} read to a{s}\n"));
+            }
+        }
+        assert_eq!(errors(&text), [format!("too many grants: at most {MAX_GRANTS}")]);
+    }
+
+    #[test]
+    fn too_many_env() {
+        let env: Vec<_> = (0..=MAX_ALLOWED_ENV)
+            .map(|i| format!("\"LD_LIBRARY_PATH=/opt/{i}\""))
+            .collect();
+        let text = format!("app a {{ exe \"/a\" env {} }}", env.join(", "));
+        assert_eq!(
+            errors(&text),
+            [format!("too many `env` strings: at most {MAX_ALLOWED_ENV} in all apps")]
+        );
     }
 
     #[test]

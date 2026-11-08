@@ -138,6 +138,20 @@ run nobody "$RB/bash" -c "read -r l < '$E/secret'"
 [[ $f -eq 0 && $rc -eq 0 ]] && quiet
 check "a bad reload keeps the old policy" $? "f=$f rc=$rc $ev $(elog)"
 
+# More exes than EXES holds (1024): refused before anything is written.
+mkdir "$DIR/many"
+for i in $(seq 1100); do printf '#!/bin/sh\n' > "$DIR/many/x$i"; done
+chmod a+rx "$DIR/many"/*
+policy "\"$E\", \"$L\"" "grant reader read to owner
+app many { exe \"$DIR/many/*\" }"
+hup
+wait_log "reload failed" && elog | grep -q 'does not fit in the maps'
+f=$?
+run nobody "$RB/bash" -c "read -r l < '$E/secret'"
+[[ $f -eq 0 && $rc -eq 0 ]] && quiet
+check "a reload that does not fit the maps keeps the old policy" $? "f=$f rc=$rc $ev $(elog)"
+rm -rf "$DIR/many"
+
 policy "\"$E\", \"$L\"" "grant reader read to owner"
 hup
 wait_log "policy reloaded"

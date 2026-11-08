@@ -138,7 +138,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, 4096);
+	__uint(max_entries, MAX_GRANTS);
 	__type(key, struct grant_key);
 	__type(value, u32);
 } GRANTS SEC(".maps");
@@ -235,7 +235,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	__uint(max_entries, 256);
+	__uint(max_entries, MAX_ALLOWED_ENV);
 	__type(key, struct env_key);
 	__type(value, u32);
 } ALLOWED_ENV SEC(".maps");
