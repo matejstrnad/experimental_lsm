@@ -358,6 +358,15 @@ fn set_array<V: Pod>(
     Ok(())
 }
 
+/// Forget the tgid of the daemon that loaded the maps. One that did not exit
+/// cleanly left it there; a later process with that pid could change labels
+/// until a policy is committed again, or for good if that start fails.
+pub fn clear_daemon_tgid(ebpf: &mut Ebpf) -> Result<()> {
+    let mut config: Array<_, u32> = Array::try_from(ebpf.map_mut("CONFIG").context("CONFIG")?)?;
+    config.set(CFG_DAEMON_TGID, 0, 0).context("clearing the daemon's tgid")?;
+    Ok(())
+}
+
 /// Invalidate every cached owner.
 fn bump_generation(ebpf: &mut Ebpf) -> Result<()> {
     let mut config: Array<_, u32> = Array::try_from(ebpf.map_mut("CONFIG").context("CONFIG")?)?;
@@ -1133,10 +1142,7 @@ impl State {
     /// Forget the daemon's tgid, for when it exits and leaves explsm loaded:
     /// a later process with the same pid must not get to change labels.
     pub fn release_tgid(&mut self) -> Result<()> {
-        let mut config: Array<_, u32> =
-            Array::try_from(self.ebpf.map_mut("CONFIG").context("CONFIG")?)?;
-        config.set(CFG_DAEMON_TGID, 0, 0)?;
-        Ok(())
+        clear_daemon_tgid(&mut self.ebpf)
     }
 
     /// Only the daemon may get file descriptors for these objects.

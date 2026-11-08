@@ -346,6 +346,9 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
     for id in pins.map_ids()? {
         own.insert(OwnKey { kind: own_kind::MAP, id }, 1);
     }
+    // An earlier daemon that died left its pid; this one's goes in with the
+    // policy. Cleared first, so a start that fails does not leave it either.
+    state::clear_daemon_tgid(&mut ebpf)?;
     // Fills the maps and labels the roots, before the xattr hooks are
     // attached (they would let the daemon through anyway).
     let mut state = State::new(
