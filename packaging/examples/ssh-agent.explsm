@@ -1,0 +1,58 @@
+# /etc/explsm/policy.d/ssh-agent.explsm: the private keys belong to
+# ssh-agent, and ssh and scp get them only through the agent. Malware that
+# runs the real scp (`scp ~/.ssh/id_ed25519 attacker:`) then gets no key
+# file, only what the agent lets it do.
+#
+# Start in audit mode, read `explsmctl log` for a while, then switch both
+# apps to `mode enforce` and run `explsmctl load`.
+
+# The agent and ssh-add, which reads the key files and hands them to the
+# agent. Only the last component of a path may be a glob.
+app ssh-agent {
+    exe  "/usr/bin/ssh-agent", "/usr/bin/ssh-add"
+    owns "~/.ssh/id_*"
+    # A fixed agent socket: start the agent with `ssh-agent -a
+    # ~/.ssh/agent/socket` and set `IdentityAgent ~/.ssh/agent/socket` in
+    # ~/.ssh/config. Owning the folder stops other programs from replacing
+    # the socket or planting their own there. explsm does not check who
+    # connects to the socket: anyone who can reach it can ask the agent to
+    # sign. Add keys with `ssh-add -c` (confirm each use) or use a FIDO key
+    # (touch each use), so a request you didn't make is visible.
+    owns "~/.ssh/agent"
+    # Start the agent and ssh-add from a terminal or from the desktop. An
+    # agent started by `systemd --user` would be dropped: start it from a
+    # shell, or leave this line out.
+    started_by @terminal, @desktop
+    mode audit
+}
+
+# The client: known_hosts and config are its own, the keys are not. Its
+# attempts to read ~/.ssh/id_* are denied and logged; it falls back to the
+# agent.
+app ssh {
+    exe  "/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/sftp"
+    owns "~/.ssh"
+    # Only typed in a terminal, or started by git (see below). A background
+    # process that runs scp gets no identity.
+    started_by @terminal
+    # A backstop against options that load code or point ssh elsewhere.
+    # `-o PKCS11Provider=…` as two arguments is caught by the second word.
+    # Other spellings and ~/.ssh/config get around it; `code trusted` (the
+    # default) still refuses a provider library a user can change.
+    deny_args "-I", "-F",
+              "-oPKCS11Provider*", "PKCS11Provider*",
+              "-oSecurityKeyProvider*", "SecurityKeyProvider*"
+    mode audit
+}
+
+# To push over ssh with git, make git an app and add it to ssh's
+# `started_by`: `started_by @terminal, git`.
+
+# Terminals start a chain of shells; a shell keeps it, anything else (a
+# wrapper such as `env`, `sudo` or `time`, or `node` running an npm script)
+# ends it. `@terminal` stops background malware, not a script you ran in the
+# terminal yourself. Missing exes are only warnings.
+terminal "/usr/bin/ptyxis", "/usr/libexec/gnome-terminal-server", "/usr/bin/konsole"
+terminal "/usr/sbin/sshd", "/usr/bin/login"
+shell    "/usr/bin/bash", "/usr/bin/zsh", "/usr/bin/fish"
+desktop  "/usr/bin/gnome-shell"

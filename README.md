@@ -62,6 +62,11 @@ app launcher {
 }
 ```
 
+An app that acts on instructions (an AI agent such as Claude with
+`~/.claude`, a shell, an interpreter) lends its identity to anyone who can
+start it. `started_by @terminal` stops background malware, not a script you
+ran in that terminal. See [docs/threat-model.md](docs/threat-model.md).
+
 See [docs/dsl.md](docs/dsl.md) for the details. Check a policy without
 loading it (no root needed):
 
@@ -299,22 +304,29 @@ SIGTERM stops it, SIGHUP reloads the policy. `--no-dbus` skips the D-Bus API,
 exec that gives a process an app identity (`exec` lines; off by default,
 there are many).
 
-## Tests
+## Testing
 
 ```bash
-cargo test --workspace                # parser, compiler, resolution, events, learn
-sudo tests/phase2-smoke.sh            # enforcement against a sandbox in /var/tmp
-sudo tests/phase3-smoke.sh            # reloads, re-resolution, explsmctl, journal
-sudo tests/phase4-smoke.sh            # prompts and their answers, auto-claim, @terminal
-sudo tests/phase5-smoke.sh            # tamper protection, self-protection, pinning
-sudo tests/phase6-smoke.sh            # user namespaces, core-dump signals, rlimits
-sudo tests/landlock-smoke.sh          # the daemon's Landlock sandbox and /proc helper
+cargo test                            # parser, compiler, resolution, events, learn
+tests/vm-smoke.sh                     # every smoke test, as root in a throwaway VM
+tests/vm-smoke.sh phase2 launch       # some of them
+tests/vm-smoke.sh --kernel v6.9       # on an Ubuntu mainline build, downloaded
+tests/run-all.sh --list               # the test names
 ```
 
-The smoke tests need the D-Bus name to themselves: stop an installed
-explsmd first (`sudo explsmctl unload`).
+The smoke tests need root and a kernel with the BPF LSM, and they change
+the system, so `tests/vm-smoke.sh` runs them in a virtme-ng (`vng`) VM with
+qemu, on a copy-on-write snapshot of this machine. Run it as a normal user.
+`--kernel` takes a version or a kernel image path; the default is the
+running kernel. Without `/dev/kvm` it falls back to CPU emulation, which is
+slow. The logs end up in `target/vm-smoke-logs/`.
 
-`phase4-smoke.sh` needs an agent built with
+CI (`.github/workflows/ci.yml`) runs `cargo fmt`, clippy, the tests and a
+release build, then the smoke tests on kernels 6.9, 6.15 and 7.3.3.
+
+To run a smoke test on the machine itself (a VM you can break), stop an
+installed explsmd first (`sudo explsmctl unload`), e.g.
+`sudo tests/phase2-smoke.sh`. `phase4-smoke.sh` needs an agent built with
 `cargo build --release --features explsm-agent/test-answer`: its `--answer`
 answers prompts without asking. Don't install that build.
 

