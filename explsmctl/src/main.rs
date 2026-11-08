@@ -231,6 +231,12 @@ fn check(
         for m in resolved.missing.iter().filter(|m| m.app == app.id) {
             println!("  missing {} {}", m.kind.name(), m.path.display());
         }
+        for m in resolved.rejected.iter().filter(|m| m.app == app.id) {
+            println!(
+                "  refused exe {} (none of its pinned hashes)",
+                m.path.display()
+            );
+        }
     }
     if !policy.terminals.is_empty() {
         println!("terminals");

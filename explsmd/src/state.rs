@@ -787,6 +787,13 @@ impl State {
                 show_key(&f.key)
             );
         }
+        for m in new.rejected.iter().filter(|m| !old.rejected.contains(m)) {
+            eprintln!(
+                "explsmd: warning: exe {} of {} has none of its pinned hashes; it is no app",
+                m.path.display(),
+                name(m.app)
+            );
+        }
         for m in new.missing.iter().filter(|m| !old.missing.contains(m)) {
             eprintln!(
                 "explsmd:   {} {} of {} does not exist (yet)",
@@ -1438,11 +1445,15 @@ impl State {
                     .iter()
                     .filter(|f| f.app == app.id)
                     .map(|f| {
-                        let note = if self.writable_exes.contains_key(&f.key) {
+                        let pinned = app.pins.contains_key(&f.pattern);
+                        let mut note = if self.writable_exes.contains_key(&f.key) {
                             "protected (user-writable)".to_string()
                         } else {
-                            String::new()
+                            "trusted: only root can change it".to_string()
                         };
+                        if pinned {
+                            note.push_str(", hash pinned");
+                        }
                         file(&f.path, &f.key, note)
                     })
                     .collect();
@@ -1470,6 +1481,15 @@ impl State {
                     .iter()
                     .filter(|m| m.app == app.id)
                     .map(|m| format!("{} {}", m.kind.name(), m.path.display()))
+                    .chain(
+                        self.resolved
+                            .rejected
+                            .iter()
+                            .filter(|m| m.app == app.id)
+                            .map(|m| {
+                                format!("exe {} (none of its pinned hashes)", m.path.display())
+                            }),
+                    )
                     .collect();
                 AppStatus {
                     name: app.name.clone(),

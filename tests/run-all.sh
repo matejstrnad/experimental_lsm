@@ -23,7 +23,7 @@
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ALL=(phase2 phase3 phase4 phase5 phase6 inherit landlock launch)
+ALL=(phase2 phase3 phase4 phase5 phase6 inherit landlock launch guard)
 BIN=$ROOT/target/release
 AGENT_BIN=$ROOT/target/smoke/release
 TIMEOUT=1200
