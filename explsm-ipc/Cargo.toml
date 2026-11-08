@@ -3,6 +3,7 @@ name = "explsm-ipc"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+publish = false
 
 [dependencies]
 serde.workspace = true

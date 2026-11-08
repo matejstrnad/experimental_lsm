@@ -1,8 +1,10 @@
 [package]
 name = "explsmd"
 edition.workspace = true
-license.workspace = true
+# The embedded BPF programs (bpf/) are MIT OR GPL-2.0.
+license = "(MIT OR Apache-2.0) AND (MIT OR GPL-2.0)"
 version.workspace = true
+publish = false
 
 [dependencies]
 anyhow.workspace = true
