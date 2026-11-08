@@ -8,7 +8,7 @@
 //! deny   pid=… … subject=unconfined owner=ssh removexattr need=label /home/me/.ssh
 //! deny   pid=… … subject=unconfined(terminal) owner=ssh open(r) need=read /home/me/.ssh/config
 //! deny   pid=… … subject=root owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
-//! bypass pid=… … subject=root owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
+//! bypass pid=… uid=0 loginuid=1000 sessionid=3 … subject=root(terminal) owner=ssh open(r) need=read /home/me/.ssh/id_ed25519
 //! claim  pid=… … app=claude path=/home/me/.claude
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=LD_PRELOAD
 //! deny   pid=… … app=claude exe=/usr/bin/claude dropped=userns
@@ -19,6 +19,10 @@
 //! deny   pid=… … subject=unconfined owner=explsmd bpf(map) need=self id=17
 //! deny   pid=… … subject=unconfined owner=unknown open(r) need=deep(read) …/d63/d64/file
 //! ```
+//!
+//! Lines of tasks with fsuid 0 carry the audit `loginuid` and `sessionid`
+//! (`unset` for services), so an admin's access through sudo or ssh can be
+//! told from a daemon's.
 //!
 //! `exec` lines are only written with `explsmd --log-execs`. `deny` lines
 //! were refused, `audit` lines would have been in enforce mode, `bypass`
@@ -32,7 +36,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use explsm_common::{
     ACTION_BYPASS, ACTION_DENY, APP_UNCONFINED, EvPath, Event, EventKind, FileKey, Op, REASON_CROSS, REASON_DEEP,
-    REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT, TF_TERMINAL, env_var, own_kind, path_kind, perm,
+    LOGIN_UNSET, REASON_ENV, REASON_LABEL, REASON_SELF, REASON_TAMPER, SUBJECT_ROOT, TF_TERMINAL, env_var, own_kind, path_kind, perm,
 };
 use explsm_policy::{IdTable, resolve::show_key};
 
@@ -204,6 +208,11 @@ fn rlimit_name(resource: u32) -> &'static str {
     NAMES.get(resource as usize).copied().unwrap_or("")
 }
 
+/// A login uid or session id; `unset` for a task that never logged in.
+fn login_id(id: u32) -> String {
+    if id == LOGIN_UNSET { "unset".into() } else { id.to_string() }
+}
+
 /// The subject's name: `root` for an unconfined task with fsuid 0 (the
 /// `@root` subject), else its app's.
 fn subject_id_name<'a>(ev: &Event, names: &'a IdTable) -> &'a str {
@@ -231,8 +240,14 @@ pub fn render(
     parents: &HashMap<FileKey, (u32, PathBuf)>,
 ) -> Line {
     let proc = cstr_field(&ev.proc_comm);
+    // Root's lines say who logged in: an admin's sudo or ssh session.
+    let login = if ev.fsuid == 0 {
+        format!(" loginuid={} sessionid={}", login_id(ev.loginuid), login_id(ev.sessionid))
+    } else {
+        String::new()
+    };
     let common = format!(
-        "pid={} tid={} uid={} proc={proc} comm={}",
+        "pid={} tid={} uid={}{login} proc={proc} comm={}",
         ev.pid,
         ev.tid,
         ev.uid,
@@ -247,6 +262,10 @@ pub fn render(
     ];
     if ev.task_flags & TF_TERMINAL != 0 {
         fields.push(("EXPLSM_TERMINAL", "1".into()));
+    }
+    if ev.fsuid == 0 {
+        fields.push(("EXPLSM_LOGINUID", login_id(ev.loginuid)));
+        fields.push(("EXPLSM_SESSIONID", login_id(ev.sessionid)));
     }
     if ev.kind == EventKind::Exec as u32 && ev.reason == REASON_ENV {
         let vars: Vec<_> = env_var::NAMES
@@ -475,11 +494,22 @@ mod tests {
         assert!(line.text.contains(" subject=unconfined(terminal) "), "{}", line.text);
         assert!(line.fields.contains(&("EXPLSM_TERMINAL", "1".into())));
 
-        // fsuid 0 and no app: @root.
+        assert!(!line.text.contains("loginuid"), "{}", line.text);
+        // fsuid 0 and no app: @root, with the login.
         ev.fsuid = 0;
+        ev.uid = 0;
+        ev.loginuid = 1000;
+        ev.sessionid = LOGIN_UNSET;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
         assert!(line.text.contains(" subject=root(terminal) "), "{}", line.text);
+        assert!(
+            line.text.contains(" uid=0 loginuid=1000 sessionid=unset proc=rm "),
+            "{}",
+            line.text
+        );
         assert!(line.fields.contains(&("EXPLSM_SUBJECT", "root".into())));
+        assert!(line.fields.contains(&("EXPLSM_LOGINUID", "1000".into())));
+        assert!(line.fields.contains(&("EXPLSM_SESSIONID", "unset".into())));
         ev.action = ACTION_BYPASS;
         let line = render(&ev, &ids, &Mounts(HashMap::new()), &HashMap::new());
         assert!(line.text.starts_with("bypass pid=7 "), "{}", line.text);

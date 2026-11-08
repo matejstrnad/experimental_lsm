@@ -184,6 +184,13 @@ terminal "/usr/bin/ptyxis", "/usr/bin/konsole", "/usr/sbin/sshd"
 grant @terminal read, list to ssh
 ```
 
+This holds for root too: a root shell on a tty or over ssh (a `login` or
+`sshd` listed here, or `sudo -i` / `su` in a user's terminal, which keep the
+flag) is `@root` plus the `@terminal` grants, so an admin can look at data
+on purpose with `root_bypass off`. explsm's log lines of processes with
+fsuid 0 carry the audit `loginuid` and `sessionid` (`unset` for services),
+so such an access is logged with who logged in.
+
 List the process that starts the shells: for GNOME Terminal that is
 `/usr/libexec/gnome-terminal-server`, not the `gnome-terminal` command. A
 `@terminal` grant without any `terminal` exe is a warning.

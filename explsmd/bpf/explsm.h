@@ -38,6 +38,9 @@ typedef u32 app_id;
 #define PATH_LEN 512
 #define MAX_CHAIN 16
 #define LABEL_XATTR "security.bpf.explsm"
+/* loginuid and sessionid of a task that never logged in, or of a kernel
+ * without CONFIG_AUDIT (AUDIT_UID_UNSET, AUDIT_SID_UNSET). */
+#define LOGIN_UNSET 0xffffffffu
 #define LAYOUT_EPOCH 1
 
 #define PERM_READ (1 << 0)
@@ -222,6 +225,8 @@ struct event {
 	u32 task_flags;
 	u32 fsuid;
 	u64 start_time;
+	u32 loginuid;
+	u32 sessionid;
 };
 
 _Static_assert(sizeof(struct file_key) == 16, "file_key layout");
@@ -231,7 +236,8 @@ _Static_assert(__builtin_offsetof(struct event, path) == 96, "event layout");
 _Static_assert(__builtin_offsetof(struct event, path2) == 616, "event layout");
 _Static_assert(__builtin_offsetof(struct event, exe) == 1136, "event layout");
 _Static_assert(__builtin_offsetof(struct event, start_time) == 1160, "event layout");
-_Static_assert(sizeof(struct event) == 1168, "event layout");
+_Static_assert(__builtin_offsetof(struct event, loginuid) == 1168, "event layout");
+_Static_assert(sizeof(struct event) == 1176, "event layout");
 _Static_assert(sizeof(struct temp_key) == 32, "temp_key layout");
 _Static_assert(sizeof(struct env_key) == 132, "env_key layout");
 

@@ -139,10 +139,11 @@ audit  pid=4243 tid=4243 uid=1000 proc=rm comm=rm subject=unconfined owner=ssh u
 deny   pid=4244 tid=4244 uid=1000 proc=mv comm=mv subject=ssh owner=ssh->unconfined rename need=xdev /home/me/.ssh/a -> /tmp/a
 ```
 
-`deny` lines were refused (`EACCES`), `audit` lines would have been refused
-in enforce mode, `bypass` lines (`explsmctl log --bypass`) were let through
-only because the process had fsuid 0 and the root bypass is in audit mode
-(see below).
+Lines of root processes also carry `loginuid=` and `sessionid=` (the audit
+login, kept across sudo; `unset` for services). `deny` lines were refused
+(`EACCES`), `audit` lines would have been refused in enforce mode, `bypass`
+lines (`explsmctl log --bypass`) were let through only because the process
+had fsuid 0 and the root bypass is in audit mode (see below).
 
 > [!NOTE]
 > **Release note: `root_bypass audit` is the new default.** Root keeps the

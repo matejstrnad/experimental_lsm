@@ -87,6 +87,10 @@ pub const MAX_CHAIN: u32 = 16;
 /// the daemon may set or remove it.
 pub const LABEL_XATTR: &str = "security.bpf.explsm";
 
+/// [`Event::loginuid`] and [`Event::sessionid`] of a task that never logged
+/// in (a service), or on a kernel without `CONFIG_AUDIT`.
+pub const LOGIN_UNSET: u32 = u32::MAX;
+
 /// Identity of a file: `(s_dev, i_ino)`.
 ///
 /// `dev` uses the kernel's internal `MKDEV` encoding (`major << 20 | minor`),
@@ -513,6 +517,12 @@ pub struct Event {
     /// Start of the process (its thread group leader) in nanoseconds since
     /// boot, which tells it from a later process with the same pid.
     pub start_time: u64,
+    /// Audit login uid of the task (`/proc/<pid>/loginuid`): who logged in,
+    /// whatever uid they are now. [`LOGIN_UNSET`] if nobody did.
+    pub loginuid: u32,
+    /// Audit session id of the task (`/proc/<pid>/sessionid`), or
+    /// [`LOGIN_UNSET`].
+    pub sessionid: u32,
 }
 
 // The C side (explsmd/bpf/explsm.h) asserts the same layout.
@@ -525,7 +535,8 @@ const _: () = {
     assert!(offset_of!(Event, path2) == 616);
     assert!(offset_of!(Event, exe) == 1136);
     assert!(offset_of!(Event, start_time) == 1160);
-    assert!(size_of::<Event>() == 1168);
+    assert!(offset_of!(Event, loginuid) == 1168);
+    assert!(size_of::<Event>() == 1176);
     assert!(size_of::<TempKey>() == 32);
     assert!(size_of::<EnvKey>() == 132);
 };

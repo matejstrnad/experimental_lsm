@@ -19,5 +19,5 @@ grant @unconfined list to ssh
 # is gnome-terminal-server, not the gnome-terminal command. Missing ones are
 # only warnings.
 terminal "/usr/bin/ptyxis", "/usr/libexec/gnome-terminal-server", "/usr/bin/konsole"
-terminal "/usr/sbin/sshd"
+terminal "/usr/sbin/sshd", "/usr/bin/login"
 grant @terminal read, list to ssh

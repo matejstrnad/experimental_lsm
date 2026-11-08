@@ -61,6 +61,9 @@ struct task_struct {
 	int tgid;
 	char comm[16];
 	u64 start_boottime;
+	/* Only with CONFIG_AUDIT: checked with bpf_core_field_exists. */
+	kuid_t loginuid;
+	unsigned int sessionid;
 };
 
 struct super_block {

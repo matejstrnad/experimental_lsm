@@ -16,6 +16,11 @@
 
 #define NULL ((void *)0)
 
+/* Whether the running kernel's struct has the field (a CO-RE relocation,
+ * BPF_FIELD_EXISTS): a field it lacks is read in a branch the verifier
+ * knows is never taken. */
+#define bpf_core_field_exists(field) __builtin_preserve_field_info(field, 2)
+
 /* Typed hook arguments, like libbpf's BPF_PROG:
  *
  *	SEC("lsm/file_open")

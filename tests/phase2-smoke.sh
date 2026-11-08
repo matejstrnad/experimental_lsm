@@ -270,6 +270,8 @@ run /usr/bin/cat "$E/secret"
 check "root bypass lets root read" $? "rc=$rc $ev"
 has "^bypass .*uid=0 .*subject=root owner=owner open\(r\) need=read $E/secret\$"
 check "… and in audit mode (the default) logs it as a bypass" $? "$ev"
+has "^bypass .* uid=0 loginuid=([0-9]+|unset) sessionid=([0-9]+|unset) proc=cat "
+check "… with the login of root's session" $? "$ev"
 
 run nobody /usr/bin/cat "$O/file"
 [[ $rc -eq 0 ]] && quiet

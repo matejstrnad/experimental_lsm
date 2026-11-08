@@ -668,6 +668,14 @@ static __always_inline struct event *new_event(u32 kind, app_id subject,
 	if (bpf_probe_read_kernel(ev->proc_comm, sizeof(ev->proc_comm), leader->comm))
 		__builtin_memset(ev->proc_comm, 0, sizeof(ev->proc_comm));
 	ev->start_time = leader->start_boottime;
+	/* Who logged in, for an admin's root shell (sudo keeps them). */
+	struct task_struct *task = bpf_get_current_task_btf();
+	ev->loginuid = LOGIN_UNSET;
+	ev->sessionid = LOGIN_UNSET;
+	if (bpf_core_field_exists(task->loginuid))
+		ev->loginuid = task->loginuid.val;
+	if (bpf_core_field_exists(task->sessionid))
+		ev->sessionid = task->sessionid;
 	return ev;
 }
 
