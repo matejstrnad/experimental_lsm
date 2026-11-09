@@ -1,0 +1,11 @@
+{"loaded_at": 1794241621, "generation": 7, "agent": false,
+ "apps": [{"name":"firefox","mode":"enforce","exes":["/usr/lib/firefox/firefox"],"roots":["/home/alice/.mozilla"]},
+          {"name":"ssh","mode":"audit","exes":["/usr/bin/ssh"],"roots":["/home/alice/.ssh"]}],
+ "temp_grants": [{"lifetime":"process","subject":"pid 4242","owner":"ssh","uid":1000,"perms":["read"]},
+                 {"lifetime":"session","subject":"backup","owner":"firefox","uid":1000,"perms":["read","list"]}],
+ "saved_grants": [{"subject":"rsync","exe":"/usr/bin/rsync","owner":"ssh","perms":["read"]},
+                  {"subject":"thunderbird","exe":"","owner":"firefox","perms":["read","write"]}],
+ "saved_claims": [{"app":"keepassxc","path":"/home/alice/Passwords"}],
+ "history": [{"time": 1794245101,"kind":"access","subject":"rg","process":"rg (pid 4242)","owner":"ssh","perms":["read"],"path":"/home/alice/.ssh/id_ed25519","answer":"deny"},
+             {"time": 1794238021,"kind":"claim","subject":"keepassxc","process":"keepassxc (pid 900)","owner":"","perms":[],"path":"/home/alice/Passwords","answer":"allow-always"}],
+ "secret": {"icon":"weather-clear-night-symbolic","phrase":"blue moon over Lisbon"}}

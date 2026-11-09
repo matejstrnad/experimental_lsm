@@ -1,0 +1,16 @@
+[package]
+name = "explsm-gui"
+description = "explsm's prompt dialog and settings window (GTK4, libadwaita)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+explsm-ipc.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+serde_json.workspace = true
+tokio.workspace = true
+zbus.workspace = true
