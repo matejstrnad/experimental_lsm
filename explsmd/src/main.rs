@@ -716,6 +716,12 @@ async fn main() -> Result<()> {
                     unloaded = true;
                     break;
                 }
+                Request::PromptInfo(c, id, reply) => {
+                    let r = desk
+                        .check_gui(&state, &c.pidfd)
+                        .and_then(|()| desk.prompt_info(c.uid, id));
+                    let _ = reply.send(r);
+                }
                 Request::UserStatus(c, reply) => {
                     let r = desk.check_gui(&state, &c.pidfd).map(|()| desk.user_status(&state, c.uid));
                     let _ = reply.send(r);

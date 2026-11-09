@@ -355,6 +355,11 @@ pub trait AgentManager {
     /// Answer prompt `id` with one of its [`PromptInfo::choices`].
     async fn answer(&self, id: u64, choice: &str) -> zbus::Result<()>;
 
+    /// Open prompt `id` of the caller's user, as explsmd sent it to the
+    /// agent: the dialog shows this, not what it was started with. Agent
+    /// and GUI exes only.
+    async fn prompt_info(&self, id: u64) -> zbus::Result<PromptInfo>;
+
     /// What concerns the caller's user. Agent and GUI exes only.
     async fn user_status(&self) -> zbus::Result<UserStatus>;
 

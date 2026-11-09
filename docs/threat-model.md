@@ -95,7 +95,10 @@ whatever the policy explicitly grants.
   user real prompts. `explsm-gui` (the prompt dialog and settings window)
   has the agent's identity too, and so may read the user's security picture
   and prompt history from explsmd; it clears its environment before GTK
-  starts (see [gui.md](gui.md)). The agent's `--answer` (answer every prompt without
+  starts (see [gui.md](gui.md)). It does not check which Wayland compositor it draws on: a
+  program of the user can start it against a compositor of its own and
+  read the picture there, so against such a program the picture proves
+  nothing (open, see gui.md). The agent's `--answer` (answer every prompt without
   asking) only exists in builds with the `test-answer` feature, which must
   never be installed.
 - **Tamper protection covers the loader and ptrace, not every way of

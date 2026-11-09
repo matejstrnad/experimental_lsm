@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use explsm_ipc::{AgentManagerProxy, Secret, UserStatus};
+use explsm_ipc::{AgentManagerProxy, PromptInfo, Secret, UserStatus};
 
 /// How long a call may take before the window gives up on it.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,6 +46,10 @@ fn explain(e: zbus::Error) -> String {
         },
         other => other.to_string(),
     }
+}
+
+pub fn prompt_info(id: u64) -> Result<PromptInfo, String> {
+    call(async move |m| m.prompt_info(id).await)
 }
 
 pub fn user_status() -> Result<UserStatus, String> {

@@ -1,7 +1,10 @@
 //! explsm-gui: explsm's own windows, in GTK4 with libadwaita.
 //!
 //! - `explsm-gui prompt` is started by explsm-agent for each prompt. It
-//!   reads the [`PromptInfo`] as JSON on stdin, asks the user, prints the
+//!   reads the [`PromptInfo`] as JSON on stdin but shows only the prompt
+//!   explsmd has under its id (any program can start the dialog, and must
+//!   not get the security picture next to words of its own), asks the
+//!   user, prints the
 //!   chosen answer on stdout and exits with [`dialog::ANSWERED`]; closed
 //!   without an answer it exits with [`dialog::CLOSED`], and when it can't
 //!   show a window at all with [`dialog::UNAVAILABLE`], so the agent falls
@@ -157,6 +160,17 @@ fn main() -> ExitCode {
                     eprintln!("explsm-gui: the prompt is not valid: {e}");
                     return ExitCode::from(dialog::UNAVAILABLE as u8);
                 }
+            };
+            // From explsmd, not from the caller; a preview shows stdin.
+            let info = match &source {
+                Source::Daemon => match daemon::prompt_info(info.id) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        eprintln!("explsm-gui: prompt {}: {e}", info.id);
+                        return ExitCode::from(dialog::CLOSED as u8);
+                    }
+                },
+                Source::Preview(_) => info,
             };
             if let Err(e) = start_gtk() {
                 eprintln!("explsm-gui: {e}");

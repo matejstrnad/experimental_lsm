@@ -147,6 +147,9 @@ impl Desk {
                     choices,
                     ..PromptInfo::default()
                 };
+                if let Some(prompt) = self.prompts.get_mut(id) {
+                    prompt.info = Some(info.clone());
+                }
                 self.send(f.uid, info);
             }
         }
@@ -225,6 +228,15 @@ impl Desk {
         }
     }
 
+    /// Open prompt `id` of user `uid`, as it was sent to their agent.
+    pub fn prompt_info(&self, uid: u32, id: u64) -> Result<PromptInfo, String> {
+        self.prompts
+            .get(id)
+            .filter(|p| p.uid == uid)
+            .and_then(|p| p.info.clone())
+            .ok_or_else(|| "no such prompt (answered or expired)".into())
+    }
+
     /// End user `uid`'s temporary grants of `subject` to `owner`.
     pub fn revoke_temp(
         &mut self,
@@ -256,7 +268,7 @@ impl Desk {
             fs::read_to_string(&file).map_err(|e| format!("reading {}: {e}", file.display()))?;
         let new = claims::remove_grant(&old, subject, owner)
             .ok_or_else(|| format!("no grant of {subject} to {owner} in {}", file.display()))?;
-        fs::write(&file, &new).map_err(|e| format!("writing {}: {e}", file.display()))?;
+        write_atomic(&file, &new, 0o644).map_err(|e| format!("writing {}: {e}", file.display()))?;
         let reply = state.reload();
         if reply.ok {
             eprintln!(
@@ -265,7 +277,7 @@ impl Desk {
             );
             return Ok(());
         }
-        if let Err(e) = fs::write(&file, &old) {
+        if let Err(e) = write_atomic(&file, &old, 0o644) {
             eprintln!("explsmd: warning: restoring {}: {e}", file.display());
         }
         Err(format!("{}: {}", reply.summary, reply.diagnostics))
@@ -473,6 +485,9 @@ impl Desk {
             warning,
             choices,
         };
+        if let Some(prompt) = self.prompts.get_mut(id) {
+            prompt.info = Some(info.clone());
+        }
         self.send(ev.uid, info);
     }
 
@@ -672,6 +687,13 @@ impl Desk {
 
 /// Write `text` to `path`, readable by root only.
 pub(crate) fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    write_atomic(path, text, 0o600)
+}
+
+/// Replace `path` with `text` (mode `mode` if it is new) through a
+/// temporary file and a rename, so a crash leaves the old or the new file,
+/// never a part of one.
+fn write_atomic(path: &Path, text: &str, mode: u32) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -680,7 +702,7 @@ pub(crate) fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
         .create(true)
         .write(true)
         .truncate(true)
-        .mode(0o600)
+        .mode(mode)
         .open(&tmp)?;
     f.write_all(text.as_bytes())?;
     f.sync_all()?;

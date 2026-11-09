@@ -7,7 +7,7 @@
 
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use explsm_ipc::{BUS_NAME, PATH, ReloadReply, Secret, Status, UserStatus};
+use explsm_ipc::{BUS_NAME, PATH, PromptInfo, ReloadReply, Secret, Status, UserStatus};
 use tokio::sync::{mpsc, oneshot};
 use zbus::{Connection, connection, fdo, message::Header};
 
@@ -23,6 +23,7 @@ pub struct Caller {
 type Reply<T> = oneshot::Sender<Result<T, String>>;
 
 pub enum Request {
+    PromptInfo(Caller, u64, Reply<PromptInfo>),
     UserStatus(Caller, Reply<UserStatus>),
     RevokeTemp(Caller, String, String, Reply<u32>),
     RevokeSaved(Caller, String, String, Reply<()>),
@@ -194,6 +195,18 @@ impl Manager {
         })
         .await?
         .map_err(fdo::Error::Failed)
+    }
+
+    async fn prompt_info(
+        &self,
+        id: u64,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<PromptInfo> {
+        let caller = gui_caller(&hdr, conn).await?;
+        ask(&self.tx, |r| Request::PromptInfo(caller, id, r))
+            .await?
+            .map_err(denied_or_failed)
     }
 
     async fn user_status(

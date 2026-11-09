@@ -16,6 +16,7 @@ use std::{
 };
 
 use explsm_common::{AppId, FileKey};
+use explsm_ipc::PromptInfo;
 
 /// How long "Deny" silences the same question.
 pub const QUIET: Duration = Duration::from_secs(10 * 60);
@@ -61,6 +62,9 @@ pub struct Prompt {
     /// As shown to the user, for the history.
     pub path: String,
     pub process: String,
+    /// What was sent to the agent, for the dialog to fetch by id: the
+    /// dialog shows only what explsmd asked, never what its caller says.
+    pub info: Option<PromptInfo>,
 }
 
 /// What [`Prompts::access`] decided.
@@ -107,6 +111,7 @@ impl Prompts {
                 choices: Vec::new(),
                 path: String::new(),
                 process: String::new(),
+                info: None,
             },
         );
         id

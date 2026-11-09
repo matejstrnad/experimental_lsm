@@ -4,6 +4,7 @@
 //! would let any process of the user read their security picture.
 //!
 //! - `status`: the user status as JSON
+//! - `prompt ID`: open prompt ID as JSON
 //! - `revoke-temp SUBJECT OWNER`: how many grants ended
 //! - `revoke-saved SUBJECT OWNER`
 //! - `set-secret ICON PHRASE`
@@ -21,6 +22,11 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let result = match args.as_slice() {
         ["status"] => daemon::user_status()
             .and_then(|s| serde_json::to_string_pretty(&s).map_err(|e| e.to_string())),
+        ["prompt", id] => id
+            .parse()
+            .map_err(|e| format!("prompt id: {e}"))
+            .and_then(daemon::prompt_info)
+            .and_then(|p| serde_json::to_string_pretty(&p).map_err(|e| e.to_string())),
         ["revoke-temp", subject, owner] => {
             daemon::revoke_temp(subject.to_string(), owner.to_string()).map(|n| n.to_string())
         }
@@ -34,7 +40,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         .map(|()| "ok".into()),
         _ => {
             eprintln!(
-                "usage: explsm-gui test status | revoke-temp SUBJECT OWNER | \
+                "usage: explsm-gui test status | prompt ID | revoke-temp SUBJECT OWNER | \
                  revoke-saved SUBJECT OWNER | set-secret ICON PHRASE"
             );
             return ExitCode::from(2);

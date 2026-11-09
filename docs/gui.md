@@ -44,8 +44,14 @@ none. What the dialog does about it:
   `/var/lib/explsm/secret-<uid>` (root only) and hands them only to
   processes running the agent or GUI exe, which get the agent's identity
   (`explsmd --gui`, default `/usr/libexec/explsm-gui`), so another program
-  of yours can't read them, ptrace the dialog or read its memory. A window
+  of yours can't ask explsmd for them, ptrace the dialog or read its memory
+  (but see the compositor below). The agent's identity is held to `code
+  trusted`, so a library planted in your folders isn't loaded into them. A window
   without your picture is not explsm's: answer nothing.
+- **Only explsmd's words next to the picture.** Any program can start
+  `explsm-gui prompt`, so the dialog takes nothing but the prompt's id from
+  its caller and shows what explsmd has under that id (`PromptInfo`). A
+  program that starts it gets a real, open prompt of yours or no window.
 - **Delayed buttons.** The buttons work only once the window has been
   active (focused) for 1.2 seconds, and stop working when it loses focus. A
   click or key press meant for another window can't land on a dialog that
@@ -65,6 +71,11 @@ What it does not do (yet):
 - A program can still draw a window that looks like the dialog;
   the picture is what tells them apart, so it only helps if you look at it.
 - It does not check that the denied program is the one in the foreground.
+- It does not check which Wayland compositor it draws on. A program of
+  yours can start the dialog or the settings window (or the agent, which
+  starts the dialog) with `WAYLAND_DISPLAY` naming a compositor it runs
+  itself, and read your picture from what the window draws. Against such
+  a program the picture does not tell explsm's windows from fakes.
 - GTK still reads your theme and `~/.config/gtk-4.0/gtk.css`, which other
   programs of yours can write: they can restyle the dialog, though not read
   your picture.
@@ -93,6 +104,7 @@ GUI exe, and only about the caller's own user:
 
 | Method | |
 |---|---|
+| `PromptInfo(id) → PromptInfo` | your open prompt `id`, as explsmd sent it to the agent |
 | `UserStatus() → UserStatus` | apps, your temporary and saved grants, your claims, history, picture |
 | `RevokeTemp(subject, owner) → u` | end your grants until exit or logout of `subject` to `owner` |
 | `RevokeSaved(subject, owner)` | remove your saved grant of `subject` to `owner`, and reload |
