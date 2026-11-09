@@ -1,13 +1,18 @@
 //! explsm-agent: asks the user about explsm denials and new folders, with
-//! desktop notifications, and passes the answers to explsmd.
+//! explsm's own dialog or desktop notifications, and passes the answers to
+//! explsmd.
 //!
 //! Runs as a systemd user service (`packaging/explsm-agent.service`). It
 //! registers with explsmd on the system bus, which only accepts it if the
 //! process runs the installed agent exe, and serves `org.explsm.Agent1` for
-//! explsmd's prompts. Each prompt becomes a notification on the session bus
-//! with one button per answer; a notification closed without an answer
-//! changes nothing (the access stays denied). When explsmd restarts, the
-//! agent registers again.
+//! explsmd's prompts. Each prompt is shown in a dialog, `explsm-gui prompt`
+//! (see `explsm-gui`), one at a time: the agent writes the prompt to its
+//! stdin and reads the answer from its stdout. A dialog closed without an
+//! answer, or one that crashes, changes nothing (the access stays denied).
+//! Where the dialog can't be shown (it is not installed, there is no
+//! display, GTK fails to start), the prompt becomes a notification on the
+//! session bus with one button per answer instead. When explsmd restarts,
+//! the agent registers again.
 //!
 //! When explsmd is not on the bus at login, or leaves it, the user is told
 //! with a notification that stays until explsmd is back: a start that
@@ -19,21 +24,36 @@
 //! trusts the agent by its exe, so any process of the user could run it with
 //! `--answer allow-always` and have its own denials allowed.
 
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+    process::{ExitStatus, Stdio},
+};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use explsm_ipc::{AGENT_PATH, AgentManagerProxy, BUS_NAME, PROMPT_CLAIM, PromptInfo, choice};
+use explsm_ipc::{
+    AGENT_PATH, AgentManagerProxy, BUS_NAME, PROMPT_CLAIM, PromptInfo, choice, dialog,
+};
 use futures_util::{Stream, StreamExt as _};
 use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    process::Command,
     signal::unix::{SignalKind, signal},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 use zbus::{Connection, Variant, connection, fdo, message::Header};
 
 #[derive(Parser)]
 #[command(about = "explsm desktop agent: prompts for denied accesses and new folders")]
 struct Cli {
+    /// The dialog program. explsmd must have been given the same path
+    /// (`explsmd --gui`), or the dialog can't show the security picture.
+    #[arg(long, default_value = "/usr/libexec/explsm-gui")]
+    gui: PathBuf,
+    /// Use notifications only, never the dialog.
+    #[arg(long)]
+    no_gui: bool,
     /// Answer every prompt with this choice instead of asking (for tests):
     /// allow-process, allow-session, allow-always, deny, claim, decline.
     /// `force:CHOICE` sends CHOICE even where it is not offered, to check
@@ -138,39 +158,25 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn button(choice: &str, info: &PromptInfo) -> String {
-    match choice {
-        choice::ALLOW_PROCESS => "Allow this process".into(),
-        choice::ALLOW_SESSION => "Allow until logout".into(),
-        choice::ALLOW_ALWAYS => "Always allow".into(),
-        choice::DENY => "Deny".into(),
-        choice::CLAIM => format!("Protect for {}", info.subject),
-        choice::DECLINE => "Leave unprotected".into(),
-        other => other.into(),
-    }
+fn button(c: &str, info: &PromptInfo) -> String {
+    choice::label(c, &info.subject)
 }
 
 /// Summary and body of the notification for `info`.
 fn text(info: &PromptInfo) -> (String, String) {
     let mut body = Vec::new();
-    let summary = if info.kind == PROMPT_CLAIM {
+    if info.kind == PROMPT_CLAIM {
         body.push(format!(
             "{} created {}. Should it be {}'s, kept from other programs?",
             escape(&info.subject),
             escape(&info.path),
             escape(&info.subject)
         ));
-        format!("New folder of {}", info.subject)
     } else {
         body.push(format!("{} was denied.", escape(&info.process)));
         body.push(escape(&info.path));
-        format!(
-            "{} wants to {} {}'s data",
-            info.subject,
-            info.perms.join(", "),
-            info.owner
-        )
-    };
+    }
+    let summary = info.summary();
     if !info.warning.is_empty() {
         body.push(format!("<b>Note:</b> {}", escape(&info.warning)));
     }
@@ -188,6 +194,179 @@ fn auto_answer<'a>(wanted: &'a str, info: &PromptInfo) -> &'a str {
         choice::DECLINE
     } else {
         choice::DENY
+    }
+}
+
+/// How a dialog ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Shown {
+    Answered(String),
+    /// Closed without an answer.
+    Closed,
+    /// Could not show a window: show a notification instead.
+    Unavailable,
+    /// The prompt was cancelled and the dialog stopped.
+    Cancelled,
+    /// Crashed or failed otherwise: no answer.
+    Failed(String),
+}
+
+impl Shown {
+    fn of(status: ExitStatus, out: &str) -> Self {
+        match status.code() {
+            Some(dialog::ANSWERED) => match out.lines().next() {
+                Some(c) if !c.trim().is_empty() => Shown::Answered(c.trim().to_string()),
+                _ => Shown::Failed("answered nothing".into()),
+            },
+            Some(dialog::CLOSED) => Shown::Closed,
+            Some(dialog::UNAVAILABLE) => Shown::Unavailable,
+            _ => Shown::Failed(status.to_string()),
+        }
+    }
+}
+
+/// The longest answer read from a dialog.
+const ANSWER_MAX: u64 = 256;
+
+/// The dialogs: one shown at a time, the others waiting.
+struct Dialogs {
+    exe: PathBuf,
+    queue: VecDeque<PromptInfo>,
+    /// The prompt shown, and what stops its dialog when dropped or sent.
+    current: Option<(u64, oneshot::Sender<()>)>,
+    done: mpsc::UnboundedSender<(PromptInfo, Shown)>,
+}
+
+impl Dialogs {
+    /// Whether a dialog can be tried at all: it is installed and there is a
+    /// display.
+    fn usable(&self) -> bool {
+        self.exe.is_file()
+            && ["WAYLAND_DISPLAY", "DISPLAY"]
+                .iter()
+                .any(|v| std::env::var_os(v).is_some_and(|d| !d.is_empty()))
+    }
+
+    /// Show the next waiting prompt if none is shown. A prompt whose dialog
+    /// does not start is returned, for a notification.
+    fn next(&mut self) -> Option<PromptInfo> {
+        if self.current.is_some() {
+            return None;
+        }
+        let info = self.queue.pop_front()?;
+        match spawn_dialog(&self.exe, info.clone(), self.done.clone()) {
+            Ok(stop) => {
+                self.current = Some((info.id, stop));
+                None
+            }
+            Err(e) => {
+                eprintln!("explsm-agent: starting {}: {e}", self.exe.display());
+                Some(info)
+            }
+        }
+    }
+
+    /// Prompt `id` is no longer needed.
+    fn cancel(&mut self, id: u64) {
+        self.queue.retain(|i| i.id != id);
+        if self.current.as_ref().is_some_and(|(c, _)| *c == id) {
+            // Dropping the sender stops the dialog.
+            self.current = None;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.current = None;
+    }
+}
+
+/// Start the dialog for `info`; what it ends with is sent on `done`.
+/// Dropping or sending the returned sender stops it.
+fn spawn_dialog(
+    exe: &Path,
+    info: PromptInfo,
+    done: mpsc::UnboundedSender<(PromptInfo, Shown)>,
+) -> std::io::Result<oneshot::Sender<()>> {
+    let mut child = Command::new(exe)
+        .arg("prompt")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let json = serde_json::to_vec(&info).map_err(std::io::Error::other)?;
+    let (stop, stopped) = oneshot::channel::<()>();
+    let mut stdin = child.stdin.take().expect("piped");
+    let stdout = child.stdout.take().expect("piped");
+    tokio::spawn(async move {
+        let ended = {
+            let run = async {
+                stdin.write_all(&json).await?;
+                drop(stdin);
+                let mut out = String::new();
+                stdout.take(ANSWER_MAX).read_to_string(&mut out).await?;
+                let status = child.wait().await?;
+                std::io::Result::Ok(Shown::of(status, &out))
+            };
+            tokio::select! {
+                r = run => Some(r),
+                _ = stopped => None,
+            }
+        };
+        let shown = match ended {
+            Some(Ok(shown)) => shown,
+            Some(Err(e)) => {
+                let _ = child.kill().await;
+                Shown::Failed(e.to_string())
+            }
+            None => {
+                let _ = child.kill().await;
+                Shown::Cancelled
+            }
+        };
+        let _ = done.send((info, shown));
+    });
+    Ok(stop)
+}
+
+/// Show `info` as a notification; remembers its id in `shown` and
+/// `by_prompt`.
+async fn notify_prompt(
+    n: &NotificationsProxy<'_>,
+    info: &PromptInfo,
+    shown: &mut HashMap<u32, u64>,
+    by_prompt: &mut HashMap<u64, u32>,
+) {
+    let (summary, body) = text(info);
+    let labels: Vec<String> = info.choices.iter().map(|c| button(c, info)).collect();
+    let actions: Vec<&str> = info
+        .choices
+        .iter()
+        .zip(&labels)
+        .flat_map(|(c, l)| [c.as_str(), l.as_str()])
+        .collect();
+    let hints = HashMap::from([
+        ("urgency", Variant::U8(2)),
+        ("resident", Variant::Bool(true)),
+    ]);
+    match n
+        .notify(
+            "explsm",
+            0,
+            "security-high",
+            &summary,
+            &body,
+            &actions,
+            hints,
+            0,
+        )
+        .await
+    {
+        Ok(nid) => {
+            shown.insert(nid, info.id);
+            by_prompt.insert(info.id, nid);
+        }
+        Err(e) => eprintln!("explsm-agent: showing prompt {}: {e}", info.id),
     }
 }
 
@@ -289,6 +468,20 @@ async fn main() -> Result<()> {
     // Notification id → prompt id, and back.
     let mut shown: HashMap<u32, u64> = HashMap::new();
     let mut by_prompt: HashMap<u64, u32> = HashMap::new();
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel();
+    let mut dialogs = Dialogs {
+        exe: cli.gui.clone(),
+        queue: VecDeque::new(),
+        current: None,
+        done: done_tx,
+    };
+    let use_dialog = !cli.no_gui && cli.answer().is_none();
+    if use_dialog && !dialogs.usable() {
+        eprintln!(
+            "explsm-agent: {} or a display is missing; prompts are notifications",
+            cli.gui.display()
+        );
+    }
 
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
@@ -307,34 +500,57 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
-                    let Some(n) = &notifier else { continue };
-                    let (summary, body) = text(&info);
-                    let labels: Vec<String> = info.choices.iter().map(|c| button(c, &info)).collect();
-                    let actions: Vec<&str> = info
-                        .choices
-                        .iter()
-                        .zip(&labels)
-                        .flat_map(|(c, l)| [c.as_str(), l.as_str()])
-                        .collect();
-                    let hints = HashMap::from([
-                        ("urgency", Variant::U8(2)),
-                        ("resident", Variant::Bool(true)),
-                    ]);
-                    match n.notify("explsm", 0, "security-high", &summary, &body, &actions, hints, 0).await {
-                        Ok(nid) => {
-                            shown.insert(nid, info.id);
-                            by_prompt.insert(info.id, nid);
+                    if use_dialog && dialogs.usable() {
+                        dialogs.queue.push_back(info);
+                        if let (Some(info), Some(n)) = (dialogs.next(), &notifier) {
+                            notify_prompt(n, &info, &mut shown, &mut by_prompt).await;
                         }
-                        Err(e) => eprintln!("explsm-agent: showing prompt {}: {e}", info.id),
+                        continue;
                     }
+                    let Some(n) = &notifier else { continue };
+                    notify_prompt(n, &info, &mut shown, &mut by_prompt).await;
                 }
                 Msg::Cancel(id) => {
+                    dialogs.cancel(id);
+                    if let (Some(info), Some(n)) = (dialogs.next(), &notifier) {
+                        notify_prompt(n, &info, &mut shown, &mut by_prompt).await;
+                    }
                     if let (Some(nid), Some(n)) = (by_prompt.remove(&id), &notifier) {
                         shown.remove(&nid);
                         let _ = n.close_notification(nid).await;
                     }
                 }
             },
+            Some((info, ended)) = done_rx.recv() => {
+                // A cancelled dialog was already replaced by the next.
+                if ended != Shown::Cancelled
+                    && dialogs.current.as_ref().is_some_and(|(id, _)| *id == info.id)
+                {
+                    dialogs.current = None;
+                }
+                match ended {
+                    Shown::Answered(answer) => {
+                        if info.choices.contains(&answer) {
+                            if let Err(e) = manager.answer(info.id, &answer).await {
+                                eprintln!("explsm-agent: answering prompt {}: {e}", info.id);
+                            }
+                        } else {
+                            eprintln!("explsm-agent: the dialog answered `{answer}`, which was not offered");
+                        }
+                    }
+                    Shown::Unavailable => {
+                        eprintln!("explsm-agent: the dialog can't be shown; prompt {} is a notification", info.id);
+                        if let Some(n) = &notifier {
+                            notify_prompt(n, &info, &mut shown, &mut by_prompt).await;
+                        }
+                    }
+                    Shown::Failed(e) => eprintln!("explsm-agent: the dialog for prompt {} failed: {e}", info.id),
+                    Shown::Closed | Shown::Cancelled => {}
+                }
+                if let (Some(info), Some(n)) = (dialogs.next(), &notifier) {
+                    notify_prompt(n, &info, &mut shown, &mut by_prompt).await;
+                }
+            }
             Some(sig) = next_of(&mut invoked) => {
                 let Ok(args) = sig.args() else { continue };
                 let Some(id) = shown.remove(&args.id) else { continue };
@@ -366,6 +582,7 @@ async fn main() -> Result<()> {
                     }
                     shown.clear();
                     by_prompt.clear();
+                    dialogs.clear();
                     if let (Some(nid), Some(n)) = (down.take(), &notifier) {
                         let _ = n.close_notification(nid).await;
                     }
@@ -419,6 +636,49 @@ mod tests {
         };
         assert_eq!(text(&claim).0, "New folder of claude");
         assert_eq!(button(choice::CLAIM, &claim), "Protect for claude");
+    }
+
+    #[test]
+    fn reads_dialog_endings() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let code = |c: i32| ExitStatus::from_raw(c << 8);
+        assert_eq!(
+            Shown::of(code(dialog::ANSWERED), "deny\n"),
+            Shown::Answered("deny".into())
+        );
+        assert!(matches!(
+            Shown::of(code(dialog::ANSWERED), ""),
+            Shown::Failed(_)
+        ));
+        assert_eq!(Shown::of(code(dialog::CLOSED), ""), Shown::Closed);
+        assert_eq!(Shown::of(code(dialog::UNAVAILABLE), ""), Shown::Unavailable);
+        // Killed by a signal.
+        assert!(matches!(
+            Shown::of(ExitStatus::from_raw(9), "deny"),
+            Shown::Failed(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn runs_a_dialog() {
+        let dir = std::env::temp_dir().join(format!("explsm-agent-dialog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("dialog");
+        std::fs::write(&script, "#!/bin/sh\ncat >/dev/null\necho allow-session\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _stop = spawn_dialog(&script, access(), tx).unwrap();
+        let (info, shown) = rx.recv().await.unwrap();
+        assert_eq!(info.id, 1);
+        assert_eq!(shown, Shown::Answered(choice::ALLOW_SESSION.into()));
+
+        // Stopped while it waits.
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(spawn_dialog(&script, access(), tx).unwrap());
+        assert_eq!(rx.recv().await.unwrap().1, Shown::Cancelled);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
