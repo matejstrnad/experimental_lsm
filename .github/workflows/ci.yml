@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install build dependencies
         # build.rs compiles explsmd/bpf/explsm.bpf.c with clang -target bpf.
-        run: sudo apt-get update -q && sudo apt-get install -y -q clang llvm libc6-dev-i386
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang llvm libc6-dev-i386 libgtk-4-dev libadwaita-1-dev
       - name: Toolchain
         run: rustup show && rustup component add rustfmt clippy
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -63,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q clang llvm libc6-dev-i386 qemu-system-x86 \
-            busybox-static kmod zstd udev iproute2 dbus python3-pip \
+            busybox-static kmod zstd udev iproute2 dbus python3-pip libgtk-4-dev libadwaita-1-dev \
             util-linux bsdextrautils linux-tools-common "linux-tools-$(uname -r)"
           # The bpftool wrapper picks a binary by `uname -r`, which is the
           # guest's kernel in the VM: put the real one first in PATH.

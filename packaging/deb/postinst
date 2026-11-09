@@ -1,6 +1,6 @@
 #!/bin/sh
-# explsm postinst: enable explsmd at boot and the agent in every graphical
-# session, then start explsmd unless the kernel can't run it.
+# explsm postinst: enable explsmd at boot, then start it unless the kernel
+# can't run it. The agent's user unit is enabled by explsm-desktop.
 set -e
 
 case "$1" in
@@ -11,7 +11,6 @@ configure)
     # Let explsmd own its bus name under the new bus policy.
     systemctl reload dbus.service >/dev/null 2>&1 || true
     systemctl enable explsmd.service >/dev/null 2>&1 || true
-    systemctl --global enable explsm-agent.service >/dev/null 2>&1 || true
     if ! grep -qw bpf /sys/kernel/security/lsm 2>/dev/null; then
         cat >&2 <<'MSG'
 explsm: the bpf LSM is not active, so explsmd was not started. Add "bpf" to
@@ -30,8 +29,8 @@ MSG
     if systemctl restart explsmd.service; then
         cat <<'MSG'
 explsm: explsmd is running. The policy in /etc/explsm/policy.d is empty;
-see /usr/share/doc/explsm/examples/ssh.explsm. Start the agent in sessions
-that are already open with: systemctl --user start explsm-agent
+see /usr/share/doc/explsm/examples/ssh.explsm. Install explsm-desktop for
+prompts in graphical sessions.
 MSG
     else
         echo "explsm: explsmd did not start; see journalctl -u explsmd" >&2

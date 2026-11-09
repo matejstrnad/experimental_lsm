@@ -1,0 +1,13 @@
+#!/bin/sh
+# explsm-desktop prerm: on removal, stop enabling the agent in new sessions.
+set -e
+
+case "$1" in
+remove|deconfigure)
+    if [ "$1" = remove ]; then
+        systemctl --global disable explsm-agent.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

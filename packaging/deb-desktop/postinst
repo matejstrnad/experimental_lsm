@@ -1,0 +1,17 @@
+#!/bin/sh
+# explsm-desktop postinst: enable the agent in every graphical session.
+set -e
+
+case "$1" in
+configure)
+    # Not under systemd (a chroot, a container build): nothing to enable.
+    [ -d /run/systemd/system ] || exit 0
+    systemctl --global enable explsm-agent.service >/dev/null 2>&1 || true
+    cat <<'MSG'
+explsm-desktop: start the agent in sessions that are already open with:
+systemctl --user start explsm-agent
+MSG
+    ;;
+esac
+
+exit 0

@@ -52,7 +52,6 @@ remove|deconfigure)
     stop
     if [ "$1" = remove ]; then
         systemctl disable explsmd.service >/dev/null 2>&1 || true
-        systemctl --global disable explsm-agent.service >/dev/null 2>&1 || true
     fi
     ;;
 esac

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=explsm Settings
+Comment=Security picture, grants and prompt history of explsm
+Exec=/usr/libexec/explsm-gui settings
+Icon=security-high-symbolic
+Terminal=false
+Categories=Settings;Security;
+StartupNotify=true
