@@ -95,6 +95,19 @@ Commits: `8716f5b`, `7408164`.
 
 ## CI status
 
+Green on `e533672`:
+https://github.com/matejstrnad/experimental_lsm/actions/runs/42539835524
+
+- `check` (fmt, clippy `-D warnings`, test, release build): passed.
+- `vm-smoke` on 6.9, 6.15 and 7.3.3: every test passed on each (phase2 45,
+  phase3 16, phase4 20, phase5 57, phase6 20, inherit 18, landlock 18,
+  launch 22, guard 7 checks). Skipped: phase3's journal checks, as the VM
+  runs no journald.
+
+Later commits only change this report. The runs before it are the history
+of the fixes above; the last fix CI found was that the sandboxed daemon
+could not read pinned exes to hash them (`76e7195`).
+
 ## Skipped, and why
 
 - **GitHub writes were refused** for the first hour of the run (403 for
