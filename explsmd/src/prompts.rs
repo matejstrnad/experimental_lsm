@@ -58,6 +58,9 @@ pub struct Prompt {
     pub asked: Instant,
     /// The answers the user was offered; only these are taken.
     pub choices: Vec<String>,
+    /// As shown to the user, for the history.
+    pub path: String,
+    pub process: String,
 }
 
 /// What [`Prompts::access`] decided.
@@ -102,6 +105,8 @@ impl Prompts {
                 kind,
                 asked: now,
                 choices: Vec::new(),
+                path: String::new(),
+                process: String::new(),
             },
         );
         id

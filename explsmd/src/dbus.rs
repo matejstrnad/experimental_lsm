@@ -2,17 +2,31 @@
 //! state, and answered from there.
 //!
 //! `org.explsm.Daemon1` is for root only. `org.explsm.AgentManager1` may be
-//! called by every user; the main loop decides who is an agent (`desk.rs`).
+//! called by every user; the main loop decides who is an agent, and which
+//! callers run the agent or GUI exe (`desk.rs`).
 
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use explsm_ipc::{BUS_NAME, PATH, ReloadReply, Status};
+use explsm_ipc::{BUS_NAME, PATH, ReloadReply, Secret, Status, UserStatus};
 use tokio::sync::{mpsc, oneshot};
 use zbus::{Connection, connection, fdo, message::Header};
 
 use crate::seed;
 
+/// A caller of the GUI methods, pinned by a pidfd so its identity can be
+/// checked.
+pub struct Caller {
+    pub uid: u32,
+    pub pidfd: OwnedFd,
+}
+
+type Reply<T> = oneshot::Sender<Result<T, String>>;
+
 pub enum Request {
+    UserStatus(Caller, Reply<UserStatus>),
+    RevokeTemp(Caller, String, String, Reply<u32>),
+    RevokeSaved(Caller, String, String, Reply<()>),
+    SetSecret(Caller, Secret, Reply<()>),
     Status(oneshot::Sender<Status>),
     Reload(oneshot::Sender<ReloadReply>),
     Unload(oneshot::Sender<String>),
@@ -54,6 +68,44 @@ async fn caller(hdr: &Header<'_>, conn: &Connection) -> fdo::Result<(String, u32
         .get_connection_unix_user(sender.clone().into())
         .await?;
     Ok((sender.to_string(), uid))
+}
+
+/// The uid, pid and a pidfd of the caller.
+async fn pinned(hdr: &Header<'_>, conn: &Connection) -> fdo::Result<(String, u32, u32, OwnedFd)> {
+    let sender = hdr
+        .sender()
+        .ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?;
+    let creds = fdo::DBusProxy::new(conn)
+        .await?
+        .get_connection_credentials(sender.clone().into())
+        .await?;
+    let uid = creds
+        .unix_user_id()
+        .ok_or_else(|| fdo::Error::AccessDenied("caller's uid unknown".into()))?;
+    let pid = creds
+        .process_id()
+        .ok_or_else(|| fdo::Error::AccessDenied("caller's pid unknown".into()))?;
+    // The bus pins the caller's process if it can; otherwise open a
+    // pidfd by pid, which a quick exit and reuse could fool.
+    let pidfd = match creds.process_fd() {
+        Some(fd) => fd.as_fd().try_clone_to_owned(),
+        None => seed::pidfd_open(pid),
+    }
+    .map_err(|e| fdo::Error::Failed(format!("pinning the caller: {e}")))?;
+    Ok((sender.to_string(), uid, pid, pidfd))
+}
+
+async fn gui_caller(hdr: &Header<'_>, conn: &Connection) -> fdo::Result<Caller> {
+    let (_, uid, _, pidfd) = pinned(hdr, conn).await?;
+    Ok(Caller { uid, pidfd })
+}
+
+fn denied_or_failed(e: String) -> fdo::Error {
+    if e.starts_with("only ") {
+        fdo::Error::AccessDenied(e)
+    } else {
+        fdo::Error::Failed(e)
+    }
 }
 
 struct Service {
@@ -113,27 +165,7 @@ impl Manager {
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(connection)] conn: &Connection,
     ) -> fdo::Result<()> {
-        let sender = hdr
-            .sender()
-            .ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?;
-        let creds = fdo::DBusProxy::new(conn)
-            .await?
-            .get_connection_credentials(sender.clone().into())
-            .await?;
-        let uid = creds
-            .unix_user_id()
-            .ok_or_else(|| fdo::Error::AccessDenied("caller's uid unknown".into()))?;
-        let pid = creds
-            .process_id()
-            .ok_or_else(|| fdo::Error::AccessDenied("caller's pid unknown".into()))?;
-        // The bus pins the caller's process if it can; otherwise open a
-        // pidfd by pid, which a quick exit and reuse could fool.
-        let pidfd = match creds.process_fd() {
-            Some(fd) => fd.as_fd().try_clone_to_owned(),
-            None => seed::pidfd_open(pid),
-        }
-        .map_err(|e| fdo::Error::Failed(format!("pinning the caller: {e}")))?;
-        let connection = sender.to_string();
+        let (connection, uid, pid, pidfd) = pinned(&hdr, conn).await?;
         ask(&self.tx, |reply| Request::Register {
             connection,
             uid,
@@ -162,6 +194,57 @@ impl Manager {
         })
         .await?
         .map_err(fdo::Error::Failed)
+    }
+
+    async fn user_status(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<UserStatus> {
+        let caller = gui_caller(&hdr, conn).await?;
+        ask(&self.tx, |r| Request::UserStatus(caller, r))
+            .await?
+            .map_err(denied_or_failed)
+    }
+
+    async fn revoke_temp(
+        &self,
+        subject: String,
+        owner: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<u32> {
+        let caller = gui_caller(&hdr, conn).await?;
+        ask(&self.tx, |r| Request::RevokeTemp(caller, subject, owner, r))
+            .await?
+            .map_err(denied_or_failed)
+    }
+
+    async fn revoke_saved(
+        &self,
+        subject: String,
+        owner: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<()> {
+        let caller = gui_caller(&hdr, conn).await?;
+        ask(&self.tx, |r| {
+            Request::RevokeSaved(caller, subject, owner, r)
+        })
+        .await?
+        .map_err(denied_or_failed)
+    }
+
+    async fn set_secret(
+        &self,
+        secret: Secret,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<()> {
+        let caller = gui_caller(&hdr, conn).await?;
+        ask(&self.tx, |r| Request::SetSecret(caller, secret, r))
+            .await?
+            .map_err(denied_or_failed)
     }
 }
 

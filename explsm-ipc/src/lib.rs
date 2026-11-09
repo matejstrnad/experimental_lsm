@@ -10,6 +10,12 @@
 //! calls [`AGENT_INTERFACE`] `Prompt` on the agent's connection for denials
 //! of that user's processes, and the agent calls `Answer` with the user's
 //! choice. Only a process running the agent exe is taken as an agent.
+//!
+//! The GUI (`explsm-gui`, started by the agent for each prompt or by the
+//! user for its settings window) runs with the agent's identity too, and
+//! calls `UserStatus`, `Revoke*` and `SetSecret` on [`MANAGER_INTERFACE`]:
+//! explsmd answers those only for processes of the agent or GUI exe, and
+//! only about the caller's own user.
 
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::Type;
@@ -36,6 +42,20 @@ pub mod choice {
     pub const CLAIM: &str = "claim";
     /// Don't, and don't ask again.
     pub const DECLINE: &str = "decline";
+
+    /// What the button for `choice` says; `subject` is
+    /// [`super::PromptInfo::subject`].
+    pub fn label(choice: &str, subject: &str) -> String {
+        match choice {
+            ALLOW_PROCESS => "Allow this process".into(),
+            ALLOW_SESSION => "Allow until logout".into(),
+            ALLOW_ALWAYS => "Always allow".into(),
+            DENY => "Deny".into(),
+            CLAIM => format!("Protect for {subject}"),
+            DECLINE => "Leave unprotected".into(),
+            other => other.into(),
+        }
+    }
 }
 
 /// [`PromptInfo::kind`]
@@ -108,7 +128,7 @@ pub struct GrantStatus {
     pub perms: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Type, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
 pub struct TempGrantStatus {
     /// `process` or `session`.
     pub lifetime: String,
@@ -148,6 +168,150 @@ pub struct PromptInfo {
     pub warning: String,
     /// What may be answered, from [`choice`].
     pub choices: Vec<String>,
+}
+
+/// How `explsm-gui prompt` ends, for the agent.
+pub mod dialog {
+    /// The user answered; the choice is on stdout.
+    pub const ANSWERED: i32 = 0;
+    /// Closed without an answer.
+    pub const CLOSED: i32 = 1;
+    /// The dialog could not be shown (no display, GTK failed): the agent
+    /// falls back to a notification.
+    pub const UNAVAILABLE: i32 = 3;
+}
+
+/// The picture and phrase the user chose, shown in every prompt so that a
+/// window drawn by another program can be told apart: only explsmd and
+/// processes of the agent and GUI exes can read it.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Secret {
+    /// One of [`SECRET_ICONS`]; empty when not set up yet.
+    pub icon: String,
+    pub phrase: String,
+}
+
+/// The pictures a [`Secret`] may use: symbolic icons every GTK theme has.
+pub const SECRET_ICONS: &[&str] = &[
+    "starred-symbolic",
+    "emblem-favorite-symbolic",
+    "weather-clear-symbolic",
+    "weather-clear-night-symbolic",
+    "weather-few-clouds-symbolic",
+    "weather-showers-symbolic",
+    "weather-snow-symbolic",
+    "weather-storm-symbolic",
+    "face-smile-symbolic",
+    "face-cool-symbolic",
+    "face-wink-symbolic",
+    "face-angel-symbolic",
+    "audio-headphones-symbolic",
+    "camera-photo-symbolic",
+    "input-gaming-symbolic",
+    "applications-science-symbolic",
+];
+
+/// The longest [`Secret::phrase`].
+pub const SECRET_PHRASE_MAX: usize = 40;
+
+impl Secret {
+    /// Why it can't be saved, if it can't.
+    pub fn check(&self) -> Result<(), String> {
+        if !SECRET_ICONS.contains(&self.icon.as_str()) {
+            return Err(format!("unknown picture `{}`", self.icon));
+        }
+        if self.phrase.chars().count() > SECRET_PHRASE_MAX {
+            return Err(format!(
+                "the phrase is longer than {SECRET_PHRASE_MAX} characters"
+            ));
+        }
+        if self.phrase.chars().any(char::is_control) {
+            return Err("the phrase has control characters".into());
+        }
+        Ok(())
+    }
+
+    pub fn is_set(&self) -> bool {
+        !self.icon.is_empty()
+    }
+}
+
+/// A prompt the user answered, kept by explsmd (in memory) for the GUI.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// Unix time of the answer.
+    pub time: u64,
+    /// [`PROMPT_ACCESS`] or [`PROMPT_CLAIM`].
+    pub kind: String,
+    pub subject: String,
+    pub process: String,
+    pub owner: String,
+    pub perms: Vec<String>,
+    pub path: String,
+    /// From [`choice`].
+    pub answer: String,
+}
+
+/// A grant in the user's claims file (`claims.d/<user>.explsm`).
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedGrant {
+    pub subject: String,
+    /// The exe, when the subject is an app the claims file made for it.
+    pub exe: String,
+    pub owner: String,
+    pub perms: Vec<String>,
+}
+
+/// A `claim` in the user's claims file. Not revocable from the GUI: taking
+/// one back unprotects data, which only root should do.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedClaim {
+    pub app: String,
+    pub path: String,
+}
+
+/// An app of the policy, as the GUI shows it.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserApp {
+    pub name: String,
+    pub mode: String,
+    pub exes: Vec<String>,
+    pub roots: Vec<String>,
+}
+
+/// Reply of `UserStatus`: what concerns the calling user.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Default)]
+pub struct UserStatus {
+    /// Unix time of the last successful policy load.
+    pub loaded_at: u64,
+    pub generation: u32,
+    /// Whether the user's agent is registered.
+    pub agent: bool,
+    pub apps: Vec<UserApp>,
+    /// The user's grants until a process exits or until logout.
+    pub temp_grants: Vec<TempGrantStatus>,
+    /// The user's grants in the claims file.
+    pub saved_grants: Vec<SavedGrant>,
+    pub saved_claims: Vec<SavedClaim>,
+    /// Answered prompts, newest first.
+    pub history: Vec<HistoryEntry>,
+    pub secret: Secret,
+}
+
+impl PromptInfo {
+    /// One line saying what is asked, without markup.
+    pub fn summary(&self) -> String {
+        if self.kind == PROMPT_CLAIM {
+            format!("New folder of {}", self.subject)
+        } else {
+            format!(
+                "{} wants to {} {}'s data",
+                self.subject,
+                self.perms.join(", "),
+                self.owner
+            )
+        }
+    }
 }
 
 /// Reply of `Reload`.
@@ -190,6 +354,22 @@ pub trait AgentManager {
 
     /// Answer prompt `id` with one of its [`PromptInfo::choices`].
     async fn answer(&self, id: u64, choice: &str) -> zbus::Result<()>;
+
+    /// What concerns the caller's user. Agent and GUI exes only.
+    async fn user_status(&self) -> zbus::Result<UserStatus>;
+
+    /// End the caller's grants of `subject` (as in
+    /// [`TempGrantStatus::subject`]) to `owner`'s data that last until a
+    /// process exits or until logout. Returns how many ended. Agent and GUI
+    /// exes only.
+    async fn revoke_temp(&self, subject: &str, owner: &str) -> zbus::Result<u32>;
+
+    /// Take a grant of `subject` to `owner` out of the caller's claims file
+    /// and reload. Agent and GUI exes only.
+    async fn revoke_saved(&self, subject: &str, owner: &str) -> zbus::Result<()>;
+
+    /// Set the caller's [`Secret`]. Agent and GUI exes only.
+    async fn set_secret(&self, secret: Secret) -> zbus::Result<()>;
 }
 
 /// What the daemon calls on an agent, at [`AGENT_PATH`].
@@ -200,4 +380,35 @@ pub trait Agent {
 
     /// The prompt is no longer needed.
     async fn cancel(&self, id: u64) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checks_secrets() {
+        let ok = Secret {
+            icon: SECRET_ICONS[0].into(),
+            phrase: "blue horse".into(),
+        };
+        assert!(ok.check().is_ok());
+        assert!(ok.is_set());
+        assert!(!Secret::default().is_set());
+        let bad = Secret {
+            icon: "evil".into(),
+            ..ok.clone()
+        };
+        assert!(bad.check().is_err());
+        let long = Secret {
+            phrase: "x".repeat(SECRET_PHRASE_MAX + 1),
+            ..ok.clone()
+        };
+        assert!(long.check().is_err());
+        let ctl = Secret {
+            phrase: "a\nb".into(),
+            ..ok
+        };
+        assert!(ctl.check().is_err());
+    }
 }

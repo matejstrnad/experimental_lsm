@@ -54,6 +54,25 @@ impl TempGrants {
         Ok(keys.len())
     }
 
+    /// The user takes back their grants of `subject` (as shown in the
+    /// status) to `owner`.
+    pub fn revoke(
+        &mut self,
+        ebpf: &mut Ebpf,
+        ids: &IdTable,
+        uid: u32,
+        subject: &str,
+        owner: &str,
+    ) -> Result<usize> {
+        let keys: Vec<TempKey> = self
+            .entries
+            .iter()
+            .filter(|(k, (_, s))| k.uid == uid && s == subject && ids.name(k.owner) == owner)
+            .map(|(k, _)| *k)
+            .collect();
+        self.remove_where(ebpf, |k| keys.contains(k))
+    }
+
     /// The process `tgid` exited.
     pub fn process_exited(&mut self, ebpf: &mut Ebpf, tgid: u32) -> Result<usize> {
         self.remove_where(ebpf, |k| {

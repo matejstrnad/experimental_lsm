@@ -88,6 +88,11 @@ struct Cli {
     /// prompts.
     #[arg(long, default_value = "/usr/libexec/explsm-agent")]
     agent: PathBuf,
+    /// The explsm-gui executable (prompt dialog and settings window). It
+    /// gets the agent's identity: it is protected like the agent, and may
+    /// read and change the user's grants, history and security picture.
+    #[arg(long, default_value = "/usr/libexec/explsm-gui")]
+    gui: PathBuf,
     /// Where the daemon keeps what it must remember, e.g. declined claims.
     #[arg(long, default_value = "/var/lib/explsm")]
     state_dir: PathBuf,
@@ -379,6 +384,7 @@ fn start(cli: &Cli, pins: &mut pin::Pins, daemon: PathBuf) -> Result<State> {
             policy: cli.policy.clone(),
             claims: Some(cli.claims.clone()),
             agent: cli.agent.clone(),
+            gui: cli.gui.clone(),
             no_root_bypass: cli.no_root_bypass,
             daemon,
             state_dir: cli.state_dir.clone(),
@@ -424,12 +430,14 @@ fn reload(state: &mut State) -> explsm_ipc::ReloadReply {
 
 fn sync_watches(watcher: &mut Watcher, state: &State) {
     let mut wanted = watch::wanted(state.watches(), state.policy_path());
-    // The agent's exe is resolved again like the policy's.
-    if let (Some(dir), Some(name)) = (state.agent_path().parent(), state.agent_path().file_name()) {
-        wanted.entry(dir.to_path_buf()).or_default().insert((
-            glob::Pattern::escape(&name.to_string_lossy()),
-            watch::Purpose::Resolve,
-        ));
+    // The agent's and the GUI's exes are resolved again like the policy's.
+    for exe in state.agent_paths() {
+        if let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) {
+            wanted.entry(dir.to_path_buf()).or_default().insert((
+                glob::Pattern::escape(&name.to_string_lossy()),
+                watch::Purpose::Resolve,
+            ));
+        }
     }
     for w in watcher.sync(&wanted) {
         eprintln!("explsmd: warning: {w}");
@@ -568,7 +576,12 @@ async fn main() -> Result<()> {
         None => None,
     };
     let (exit_tx, mut exits) = mpsc::unbounded_channel();
-    let mut desk = Desk::new(bus.clone(), exit_tx, cli.state_dir.join("declined-claims"));
+    let mut desk = Desk::new(
+        bus.clone(),
+        exit_tx,
+        cli.state_dir.join("declined-claims"),
+        cli.state_dir.join("secrets"),
+    );
     let mut quiet = quiet::Quiet::new(Duration::from_secs(cli.quiet_window));
     eprintln!(
         "explsmd: attached{}",
@@ -702,6 +715,29 @@ async fn main() -> Result<()> {
                     let _ = reply.send(notes.join("\n"));
                     unloaded = true;
                     break;
+                }
+                Request::UserStatus(c, reply) => {
+                    let r = desk.check_gui(&state, &c.pidfd).map(|()| desk.user_status(&state, c.uid));
+                    let _ = reply.send(r);
+                }
+                Request::RevokeTemp(c, subject, owner, reply) => {
+                    let r = desk
+                        .check_gui(&state, &c.pidfd)
+                        .and_then(|()| desk.revoke_temp(&mut state, c.uid, &subject, &owner));
+                    let _ = reply.send(r);
+                }
+                Request::RevokeSaved(c, subject, owner, reply) => {
+                    let r = desk
+                        .check_gui(&state, &c.pidfd)
+                        .and_then(|()| desk.revoke_saved(&mut state, c.uid, &subject, &owner));
+                    if r.is_ok() {
+                        sync_watches(&mut watcher, &state);
+                    }
+                    let _ = reply.send(r);
+                }
+                Request::SetSecret(c, secret, reply) => {
+                    let r = desk.check_gui(&state, &c.pidfd).and_then(|()| desk.set_secret(c.uid, &secret));
+                    let _ = reply.send(r);
                 }
                 Request::Register { connection, uid, pid, pidfd, reply } => {
                     let _ = reply.send(desk.register(&state, connection, uid, pid, pidfd));

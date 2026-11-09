@@ -21,6 +21,7 @@ use std::{
 };
 
 use explsm_common::perm;
+use explsm_ipc::{SavedClaim, SavedGrant};
 use explsm_policy::{EXTENSION, compile::RESERVED_NAMES, users::parse_passwd};
 
 /// Names that look like an app but run any script given to them, so
@@ -176,7 +177,7 @@ impl Appended {
 /// Append `text` to `<dir>/<user>.explsm`.
 pub fn append(dir: &Path, user: &str, text: &str) -> io::Result<Appended> {
     fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{user}.{EXTENSION}"));
+    let path = file_of(dir, user);
     let old_len = fs::metadata(&path).map_or(0, |m| m.len());
     let mut file = OpenOptions::new()
         .create(true)
@@ -188,6 +189,127 @@ pub fn append(dir: &Path, user: &str, text: &str) -> io::Result<Appended> {
     }
     file.write_all(text.as_bytes())?;
     Ok(Appended { path, old_len })
+}
+
+/// The path of `user`'s claims file.
+pub fn file_of(dir: &Path, user: &str) -> PathBuf {
+    dir.join(format!("{user}.{EXTENSION}"))
+}
+
+/// A line without its comment and surrounding blanks. Only the forms
+/// explsmd writes are understood; a `#` in a string ends nothing here
+/// because they are only looked at in `grant` and `app` lines, which
+/// explsmd writes without one.
+fn code(line: &str) -> &str {
+    line.split_once('#').map_or(line, |(c, _)| c).trim()
+}
+
+/// `grant SUBJECT PERMS to OWNER`, with one subject and one owner.
+fn grant_line(line: &str) -> Option<(&str, Vec<String>, &str)> {
+    let rest = code(line).strip_prefix("grant ")?;
+    let (subject, rest) = rest.trim_start().split_once(char::is_whitespace)?;
+    let (perms, owner) = rest.rsplit_once(" to ")?;
+    let owner = owner.trim();
+    if subject.contains(',') || owner.contains([',', ' ']) || owner.is_empty() {
+        return None;
+    }
+    let perms = perms
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    Some((subject, perms, owner))
+}
+
+/// `app NAME { exe "PATH" }` on one line, as [`exe_grant`] writes it.
+fn exe_app_line(line: &str) -> Option<(&str, String)> {
+    let rest = code(line).strip_prefix("app ")?;
+    let (name, rest) = rest.trim_start().split_once(char::is_whitespace)?;
+    let inner = rest
+        .trim()
+        .strip_prefix('{')?
+        .strip_suffix('}')?
+        .trim()
+        .strip_prefix("exe ")?
+        .trim();
+    let quoted = inner.strip_prefix('"')?.strip_suffix('"')?;
+    let path = quoted.replace("\\\"", "\"").replace("\\\\", "\\");
+    Some((name, path))
+}
+
+/// `claim APP "PATH"`, as [`claim`] writes it.
+fn claim_line(line: &str) -> Option<SavedClaim> {
+    let rest = code(line).strip_prefix("claim ")?;
+    let (app, rest) = rest.trim_start().split_once(char::is_whitespace)?;
+    let path = rest.trim().strip_prefix('"')?.strip_suffix('"')?;
+    Some(SavedClaim {
+        app: app.into(),
+        path: path.replace("\\\"", "\"").replace("\\\\", "\\"),
+    })
+}
+
+/// The grants and claims of a claims file.
+pub fn saved(text: &str) -> (Vec<SavedGrant>, Vec<SavedClaim>) {
+    let exes: Vec<(&str, String)> = text.lines().filter_map(exe_app_line).collect();
+    let grants = text
+        .lines()
+        .filter_map(grant_line)
+        .map(|(subject, perms, owner)| SavedGrant {
+            subject: subject.into(),
+            exe: exes
+                .iter()
+                .find(|(n, _)| *n == subject)
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default(),
+            owner: owner.into(),
+            perms,
+        })
+        .collect();
+    (grants, text.lines().filter_map(claim_line).collect())
+}
+
+/// `text` without the grants of `subject` to `owner`; without the app
+/// line that made `subject` too if nothing else in it names the app, and
+/// without the comments left heading nothing. `None` if there is no such
+/// grant.
+pub fn remove_grant(text: &str, subject: &str, owner: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let is_target = |l: &str| grant_line(l).is_some_and(|(s, _, o)| s == subject && o == owner);
+    if !lines.iter().any(|l| is_target(l)) {
+        return None;
+    }
+    let mut keep: Vec<&str> = lines.iter().copied().filter(|l| !is_target(l)).collect();
+    // The app made for an exe goes when no grant of it is left.
+    let still_named = keep.iter().any(|l| {
+        grant_line(l).is_some_and(|(s, _, o)| s == subject || o == subject)
+            || claim_line(l).is_some_and(|c| c.app == subject)
+    });
+    if !still_named {
+        keep.retain(|l| exe_app_line(l).is_none_or(|(n, _)| n != subject));
+    }
+    // A prompt comment followed by nothing but blanks or another comment
+    // headed what was removed.
+    let mut out: Vec<&str> = Vec::new();
+    for (i, l) in keep.iter().enumerate() {
+        let prompt_comment = l.trim_start().starts_with("# allowed by ")
+            && l.trim_end().ends_with("through a prompt");
+        if prompt_comment {
+            let next = keep[i + 1..].iter().find(|n| !n.trim().is_empty());
+            if next.is_none_or(|n| n.trim_start().starts_with('#')) {
+                // Drop it, and the blank line before it.
+                if out.last().is_some_and(|p| p.trim().is_empty()) {
+                    out.pop();
+                }
+                continue;
+            }
+        }
+        out.push(l);
+    }
+    let mut s = out.join("\n");
+    if text.ends_with('\n') && !s.is_empty() {
+        s.push('\n');
+    }
+    Some(s)
 }
 
 /// Declined claims, one `app<TAB>path` per line.
@@ -264,6 +386,49 @@ mod tests {
         let c = check(&Sources::single("t", &text), &IdTable::default()).unwrap();
         assert_eq!(c.grants.len(), 2);
         assert_eq!(c.apps[1].roots[0].path, Path::new("/home/me/.c\\x"));
+    }
+
+    #[test]
+    fn reads_and_removes_saved_grants() {
+        let text = format!(
+            "# Written by explsmd for answers to prompts. Edit freely.\n{}{}{}{}",
+            exe_grant(
+                "me",
+                "rg",
+                Path::new("/usr/bin/r\"g"),
+                perm::READ | perm::LIST,
+                "ssh"
+            ),
+            app_grant("me", "backup", perm::ALL, "ssh"),
+            claim("me", "claude", Path::new("/home/me/.claude")),
+            app_grant("me", "backup", perm::READ, "claude"),
+        );
+        let (grants, claims) = saved(&text);
+        assert_eq!(grants.len(), 3);
+        assert_eq!(grants[0].subject, "rg");
+        assert_eq!(grants[0].exe, "/usr/bin/r\"g");
+        assert_eq!(grants[0].perms, ["read", "list"]);
+        assert_eq!(grants[1].perms, ["all"]);
+        assert_eq!(grants[1].exe, "");
+        assert_eq!(claims[0].path, "/home/me/.claude");
+
+        // The app made for rg goes with its only grant, and the comment.
+        let t = remove_grant(&text, "rg", "ssh").unwrap();
+        assert!(!t.contains("rg"), "{t}");
+        assert_eq!(saved(&t).0.len(), 2);
+        // backup's other grant stays.
+        let t = remove_grant(&t, "backup", "ssh").unwrap();
+        assert_eq!(saved(&t).0.len(), 1);
+        assert!(t.contains("grant backup read to claude"));
+        assert!(t.contains("claim claude"));
+        assert_eq!(t.matches("# allowed by").count(), 1, "{t}");
+        assert!(remove_grant(&t, "backup", "ssh").is_none());
+
+        use explsm_policy::{IdTable, Sources, check};
+        let full = format!(
+            "app ssh {{ exe \"/usr/bin/ssh\" }}\napp claude {{ exe \"/c\" }}\napp backup {{ exe \"/b\" }}\n{t}"
+        );
+        check(&Sources::single("t", &full), &IdTable::default()).unwrap();
     }
 
     #[test]

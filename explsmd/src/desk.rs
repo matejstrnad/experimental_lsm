@@ -12,21 +12,25 @@
 //! many folders apps create are gone again at once.
 
 use std::{
-    collections::HashMap,
-    fs,
+    collections::{HashMap, VecDeque},
+    fs::{self, OpenOptions},
+    io::Write as _,
     os::{
         fd::{AsFd as _, OwnedFd},
-        unix::fs::MetadataExt as _,
+        unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     },
-    path::PathBuf,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use explsm_common::{
     ACTION_DENY, APP_AGENT, APP_DAEMON, APP_UNCONFINED, Event, EventKind, OWNER_PINS, REASON_PERMS,
     TempKey, perm, temp_kind,
 };
-use explsm_ipc::{AgentProxy, AgentStatus, PROMPT_ACCESS, PROMPT_CLAIM, PromptInfo, choice};
+use explsm_ipc::{
+    AgentProxy, AgentStatus, HistoryEntry, PROMPT_ACCESS, PROMPT_CLAIM, PromptInfo, Secret,
+    UserApp, UserStatus, choice,
+};
 use explsm_policy::resolve::{file_key, show_key};
 use tokio::sync::mpsc;
 use zbus::Connection;
@@ -43,6 +47,9 @@ use crate::{
 
 /// How long after a folder was created it is asked about.
 pub const CLAIM_DELAY: Duration = Duration::from_secs(1);
+
+/// How many answered prompts are kept per user for the GUI.
+pub const HISTORY: usize = 200;
 
 struct Agent {
     connection: String,
@@ -66,6 +73,10 @@ pub struct Desk {
     exits: mpsc::UnboundedSender<(u32, OwnedFd)>,
     declined_file: PathBuf,
     new_folders: Vec<NewFolder>,
+    /// Answered prompts per user, newest last. Not kept across restarts.
+    history: HashMap<u32, VecDeque<HistoryEntry>>,
+    /// One file per uid with the user's [`Secret`].
+    secrets_dir: PathBuf,
 }
 
 /// What an answer did, beyond the grant.
@@ -79,6 +90,7 @@ impl Desk {
         conn: Option<Connection>,
         exits: mpsc::UnboundedSender<(u32, OwnedFd)>,
         declined_file: PathBuf,
+        secrets_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
@@ -88,6 +100,8 @@ impl Desk {
             exits,
             declined_file,
             new_folders: Vec::new(),
+            history: HashMap::new(),
+            secrets_dir,
         }
     }
 
@@ -119,6 +133,8 @@ impl Desk {
                 let choices = vec![choice::CLAIM.to_string(), choice::DECLINE.to_string()];
                 if let Some(prompt) = self.prompts.get_mut(id) {
                     prompt.choices = choices.clone();
+                    prompt.path = f.path.display().to_string();
+                    prompt.process = f.process.clone();
                 }
                 let info = PromptInfo {
                     id,
@@ -146,6 +162,150 @@ impl Desk {
             .collect();
         out.sort_by_key(|a| a.uid);
         out
+    }
+
+    /// Whether the process behind `pidfd` runs the agent or GUI exe: only
+    /// they may see and change what the GUI shows.
+    pub fn check_gui(&self, state: &State, pidfd: &OwnedFd) -> Result<(), String> {
+        let app = state
+            .tasks()
+            .and_then(|tasks| seed::app_of(tasks, pidfd.as_fd()).map_err(Into::into))
+            .map_err(|e| format!("checking the caller: {e}"))?;
+        if app == APP_AGENT {
+            Ok(())
+        } else {
+            Err("only explsm-agent and explsm-gui may call this".into())
+        }
+    }
+
+    /// What concerns user `uid`, for the GUI.
+    pub fn user_status(&self, state: &State, uid: u32) -> UserStatus {
+        let status = state.status();
+        let apps = status
+            .apps
+            .into_iter()
+            .map(|a| UserApp {
+                name: a.name,
+                mode: a.mode,
+                exes: a.exes.into_iter().map(|f| f.path).collect(),
+                roots: a
+                    .roots
+                    .into_iter()
+                    .map(|f| f.path)
+                    .chain(a.missing)
+                    .collect(),
+            })
+            .collect();
+        let (saved_grants, saved_claims) = state
+            .claims_dir()
+            .and_then(|d| fs::read_to_string(claims::file_of(d, &claims::user_name(uid))).ok())
+            .map(|t| claims::saved(&t))
+            .unwrap_or_default();
+        UserStatus {
+            loaded_at: status.loaded_at,
+            generation: status.generation,
+            agent: self.agents.contains_key(&uid),
+            apps,
+            temp_grants: self
+                .temp
+                .status(&state.policy.ids)
+                .into_iter()
+                .filter(|g| g.uid == uid)
+                .collect(),
+            saved_grants,
+            saved_claims,
+            history: self
+                .history
+                .get(&uid)
+                .map(|h| h.iter().rev().cloned().collect())
+                .unwrap_or_default(),
+            secret: self.secret(uid),
+        }
+    }
+
+    /// End user `uid`'s temporary grants of `subject` to `owner`.
+    pub fn revoke_temp(
+        &mut self,
+        state: &mut State,
+        uid: u32,
+        subject: &str,
+        owner: &str,
+    ) -> Result<u32, String> {
+        let n = self
+            .temp
+            .revoke(&mut state.ebpf, &state.policy.ids, uid, subject, owner)
+            .map_err(|e| format!("{e:#}"))?;
+        eprintln!("explsmd: uid {uid} revoked {n} temporary grants of {subject} on {owner}");
+        Ok(n as u32)
+    }
+
+    /// Take user `uid`'s grant of `subject` to `owner` out of their claims
+    /// file and reload; put the file back if the policy does not load.
+    pub fn revoke_saved(
+        &mut self,
+        state: &mut State,
+        uid: u32,
+        subject: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        let dir = state.claims_dir().ok_or("no claims directory")?;
+        let file = claims::file_of(dir, &claims::user_name(uid));
+        let old =
+            fs::read_to_string(&file).map_err(|e| format!("reading {}: {e}", file.display()))?;
+        let new = claims::remove_grant(&old, subject, owner)
+            .ok_or_else(|| format!("no grant of {subject} to {owner} in {}", file.display()))?;
+        fs::write(&file, &new).map_err(|e| format!("writing {}: {e}", file.display()))?;
+        let reply = state.reload();
+        if reply.ok {
+            eprintln!(
+                "explsmd: uid {uid} revoked the grant of {subject} on {owner}; policy reloaded: {}",
+                reply.summary
+            );
+            return Ok(());
+        }
+        if let Err(e) = fs::write(&file, &old) {
+            eprintln!("explsmd: warning: restoring {}: {e}", file.display());
+        }
+        Err(format!("{}: {}", reply.summary, reply.diagnostics))
+    }
+
+    fn secret_file(&self, uid: u32) -> PathBuf {
+        self.secrets_dir.join(uid.to_string())
+    }
+
+    /// User `uid`'s secret: the icon on the first line, the phrase on the
+    /// second.
+    pub fn secret(&self, uid: u32) -> Secret {
+        let text = fs::read_to_string(self.secret_file(uid)).unwrap_or_default();
+        let mut lines = text.lines();
+        let secret = Secret {
+            icon: lines.next().unwrap_or_default().into(),
+            phrase: lines.next().unwrap_or_default().into(),
+        };
+        if secret.check().is_ok() {
+            secret
+        } else {
+            Secret::default()
+        }
+    }
+
+    pub fn set_secret(&self, uid: u32, secret: &Secret) -> Result<(), String> {
+        secret.check()?;
+        write_private(
+            &self.secret_file(uid),
+            &format!("{}\n{}\n", secret.icon, secret.phrase),
+        )
+        .map_err(|e| format!("saving the picture: {e}"))?;
+        eprintln!("explsmd: uid {uid} set their security picture");
+        Ok(())
+    }
+
+    fn remember(&mut self, uid: u32, entry: HistoryEntry) {
+        let h = self.history.entry(uid).or_default();
+        if h.len() >= HISTORY {
+            h.pop_front();
+        }
+        h.push_back(entry);
     }
 
     /// `connection` (of process `pid`, user `uid`) wants to be an agent.
@@ -282,8 +442,16 @@ impl Desk {
             },
         };
         choices.push(choice::DENY.into());
+        let path = line
+            .fields
+            .iter()
+            .find(|(k, _)| *k == "EXPLSM_PATH")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
         if let Some(prompt) = self.prompts.get_mut(id) {
             prompt.choices = choices.clone();
+            prompt.path = path.clone();
+            prompt.process = process(ev);
             if let Kind::Access {
                 pidfd: p, exe: e, ..
             } = &mut prompt.kind
@@ -292,12 +460,6 @@ impl Desk {
                 *e = exe;
             }
         }
-        let path = line
-            .fields
-            .iter()
-            .find(|(k, _)| *k == "EXPLSM_PATH")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
         let info = PromptInfo {
             id,
             kind: PROMPT_ACCESS.into(),
@@ -359,6 +521,13 @@ impl Desk {
             return Err(format!("`{choice}` is not an answer to this prompt"));
         }
         let prompt = self.prompts.take(id).expect("looked up above");
+        let mut entry = HistoryEntry {
+            time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            answer: choice.into(),
+            ..HistoryEntry::default()
+        };
         if choice == choice::DENY {
             self.prompts.denied(&prompt, Instant::now());
         }
@@ -435,6 +604,12 @@ impl Desk {
                     "explsmd: uid {uid} answered {choice} for {shown} on {owner_name} ({})",
                     perm_names(perms).join(",")
                 );
+                entry.kind = PROMPT_ACCESS.into();
+                entry.process = prompt.process.clone();
+                entry.subject = shown;
+                entry.owner = owner_name;
+                entry.perms = perm_names(perms);
+                entry.path = prompt.path.clone();
             }
             Kind::Claim { app, path } => {
                 let name = state.policy.name(app).to_string();
@@ -453,8 +628,13 @@ impl Desk {
                     "explsmd: uid {uid} answered {choice} for {} of {name}",
                     path.display()
                 );
+                entry.kind = PROMPT_CLAIM.into();
+                entry.subject = name;
+                entry.process = prompt.process.clone();
+                entry.path = path.display().to_string();
             }
         }
+        self.remember(uid, entry);
         Ok(Answered { reloaded })
     }
 
@@ -486,6 +666,23 @@ impl Desk {
         );
         Err(format!("{}: {}", reply.summary, reply.diagnostics))
     }
+}
+
+/// Write `text` to `path`, readable by root only.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("new");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    fs::rename(&tmp, path)
 }
 
 async fn agent_proxy(conn: &Connection, dest: String) -> zbus::Result<AgentProxy<'static>> {

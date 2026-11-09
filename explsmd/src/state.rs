@@ -75,6 +75,8 @@ pub struct Options {
     pub claims: Option<PathBuf>,
     /// The `explsm-agent` executable, given the agent identity.
     pub agent: PathBuf,
+    /// The `explsm-gui` executable, given the agent identity too.
+    pub gui: PathBuf,
     pub no_root_bypass: bool,
     /// Where explsmd is installed: given the daemon identity (also by path,
     /// see `DAEMON_PATH`) and protected.
@@ -92,7 +94,7 @@ pub struct Options {
 }
 
 /// Unit files and bus policy of explsm, protected where they are installed.
-const OWN_FILES: [&str; 11] = [
+const OWN_FILES: [&str; 12] = [
     "/etc/systemd/system/explsmd.service",
     "/usr/lib/systemd/system/explsmd.service",
     "/lib/systemd/system/explsmd.service",
@@ -100,6 +102,7 @@ const OWN_FILES: [&str; 11] = [
     "/usr/lib/systemd/system/systemd-user-sessions.service.d/explsm-gate.conf",
     "/etc/systemd/user/explsm-agent.service",
     "/usr/lib/systemd/user/explsm-agent.service",
+    "/usr/share/applications/org.explsm.Settings.desktop",
     "/etc/dbus-1/system.d/org.explsm.Daemon1.conf",
     "/usr/share/dbus-1/system.d/org.explsm.Daemon1.conf",
     "/usr/local/bin/explsmctl",
@@ -894,10 +897,11 @@ impl State {
             .exes
             .iter()
             .map(|f| (f.key, f.app, f.path.clone()))
-            .chain(
-                resolve::file_key(&self.opts.agent)
-                    .map(|k| (k, APP_AGENT, self.opts.agent.clone())),
-            );
+            .chain(self.agent_paths().into_iter().filter_map(|p| {
+                resolve::file_key(&p)
+                    .ok()
+                    .map(|k| (k, APP_AGENT, p.clone()))
+            }));
         for (key, app, path) in apps {
             let mut paths = vec![path.clone()];
             if let Ok(real) = fs::canonicalize(&path)
@@ -1252,6 +1256,11 @@ impl State {
         &self.opts.agent
     }
 
+    /// The exes given the agent identity: the agent's and the GUI's.
+    pub fn agent_paths(&self) -> Vec<PathBuf> {
+        vec![self.opts.agent.clone(), self.opts.gui.clone()]
+    }
+
     pub fn claims_dir(&self) -> Option<&Path> {
         self.opts.claims.as_deref()
     }
@@ -1296,8 +1305,10 @@ impl State {
     /// the one at its path, which differs after an upgrade.
     pub fn exes(&self) -> HashMap<FileKey, AppId> {
         let mut exes = self.resolved.exe_map();
-        if let Ok(key) = resolve::file_key(&self.opts.agent) {
-            exes.entry(key).or_insert(APP_AGENT);
+        for path in self.agent_paths() {
+            if let Ok(key) = resolve::file_key(&path) {
+                exes.entry(key).or_insert(APP_AGENT);
+            }
         }
         for path in [Path::new("/proc/self/exe"), &self.opts.daemon] {
             if let Ok(key) = resolve::file_key(path) {
@@ -1315,6 +1326,7 @@ impl State {
             self.opts.state_dir.clone(),
             self.opts.daemon.clone(),
             self.opts.agent.clone(),
+            self.opts.gui.clone(),
         ];
         paths.extend(self.opts.claims.clone());
         if let Some(dir) = self.opts.daemon.parent() {
