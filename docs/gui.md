@@ -5,6 +5,14 @@ a user service in each graphical session, and `explsm-gui`, a GTK4 /
 libadwaita program with two windows. Servers install `explsm` only and pull
 in nothing graphical.
 
+**The windows need Wayland.** On X11 any client of the user can read the
+screen, and so the security picture, and send clicks and key presses to any
+window; no dialog can defend against that. In an X11 session the windows
+don't open (the prompt dialog exits with code 3), and the agent keeps
+showing prompts as notifications. `explsm-gui` holds GTK to its Wayland
+backend (`GDK_BACKEND=wayland`), so it can't end up on X11 through Xwayland
+either.
+
 ## The prompt dialog
 
 For each prompt of explsmd, the agent starts `explsm-gui prompt`, writes the
@@ -21,10 +29,10 @@ is shown at a time; later prompts wait. The dialog shows:
 Closing the window or pressing Escape answers nothing: the access stays
 denied. If the dialog crashes, nothing is answered either; the agent keeps
 the logic and the D-Bus link to explsmd, so a broken UI can't answer for
-you. The dialog exits with code 3 when it can't open a window at all (no
-display, GTK fails); the agent then shows the prompt as a notification, as
-it does when `explsm-gui` is not installed or there is no `WAYLAND_DISPLAY`
-or `DISPLAY`. `explsm-agent --no-gui` uses notifications only.
+you. The dialog exits with code 3 when it can't open a window at all (not a
+Wayland session, GTK fails); the agent then shows the prompt as a
+notification, as it does when `explsm-gui` is not installed or there is no
+`WAYLAND_DISPLAY`. `explsm-agent --no-gui` uses notifications only.
 
 ## Against fake and hijacked prompts
 
@@ -43,19 +51,18 @@ none. What the dialog does about it:
   click or key press meant for another window can't land on a dialog that
   just popped up, and no button is the default for Enter.
 - **A clean environment.** `explsm-gui` drops every environment variable
-  but those that name the display, the session bus and the language before
+  but those that name the Wayland display, the session bus and the language before
   GTK starts: GLib, GTK and Mesa load code named by variables such as
   `GIO_EXTRA_MODULES`, `GDK_PIXBUF_MODULE_FILE` or `LIBGL_DRIVERS_PATH`,
-  which would run with the agent's identity.
+  which would run with the agent's identity. `DBUS_SYSTEM_BUS_ADDRESS` goes
+  too, so it always talks to the real system bus.
 - **No single instance.** The windows don't register as unique GApplications
   on the session bus: any program could own that name first and get the
   activation instead.
 
 What it does not do (yet):
 
-- On **X11** any client can read the screen (and so the picture, while a
-  dialog shows it) and send synthetic clicks. Use Wayland.
-- On Wayland a program can still draw a window that looks like the dialog;
+- A program can still draw a window that looks like the dialog;
   the picture is what tells them apart, so it only helps if you look at it.
 - It does not check that the denied program is the one in the foreground.
 - GTK still reads your theme and `~/.config/gtk-4.0/gtk.css`, which other
@@ -108,3 +115,14 @@ echo '{"id":1,"kind":"access","subject":"/usr/bin/rg","process":"rg (pid 7)","ow
 
 Building needs the GTK 4 (≥ 4.14) and libadwaita (≥ 1.5) development files
 (`libgtk-4-dev libadwaita-1-dev`).
+
+## Tests
+
+`tests/gui-smoke.sh` (in `tests/run-all.sh`, so in CI's VM) checks the four
+methods against a real explsmd: that only the GUI exe at the path explsmd
+was given may call them (not `busctl`, not a copy of the GUI elsewhere),
+that the picture is stored root-only and each user has their own, that
+the status lists grants, saved grants and answers, and that revoking works
+and only on the caller's own grants. It calls them through `explsm-gui
+test …`, which only exists with the `test-cli` feature;
+`packaging/build-deb.sh` refuses to package such a build.

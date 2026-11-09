@@ -14,3 +14,9 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 serde_json.workspace = true
 tokio.workspace = true
 zbus.workspace = true
+
+[features]
+# `explsm-gui test …`, which calls explsmd's GUI methods from the command
+# line, for tests/gui-smoke.sh. Never in an installed GUI: it has the agent's
+# identity, so any process of the user could read their security picture.
+test-cli = []

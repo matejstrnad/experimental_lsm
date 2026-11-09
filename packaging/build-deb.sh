@@ -22,6 +22,11 @@ if "$REL/explsm-agent" --help | grep -q -- '--answer'; then
     echo "build-deb: target/release/explsm-agent was built with test-answer; rebuild without it" >&2
     exit 1
 fi
+# The test GUI hands the user's security picture to any caller.
+if "$REL/explsm-gui" test 2>&1 | grep -q 'usage: explsm-gui test'; then
+    echo "build-deb: target/release/explsm-gui was built with test-cli; rebuild without it" >&2
+    exit 1
+fi
 
 VERSION=$(cargo metadata --format-version 1 --no-deps |
     python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "explsmd"))')

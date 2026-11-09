@@ -10,7 +10,8 @@
 # default is every test. Options:
 #   --bin DIR        explsmd, explsmctl and explsm-agent (default target/release)
 #   --agent-bin DIR  the same, with the agent built with the `test-answer`
-#                    feature, for phase4 (default target/smoke/release)
+#                    feature and explsm-gui with `test-cli`, for phase4 and
+#                    gui (default target/smoke/release)
 #   --any-build      SMOKE_ANY_BUILD=1: don't refuse builds older than the sources
 #   --timeout SECS   per test (default 1200)
 #   --logs DIR       where the logs go (default /var/tmp/explsm-run-all)
@@ -23,7 +24,7 @@
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ALL=(phase2 phase3 phase4 phase5 phase6 inherit landlock launch guard)
+ALL=(phase2 phase3 phase4 phase5 phase6 inherit landlock launch guard gui)
 BIN=$ROOT/target/release
 AGENT_BIN=$ROOT/target/smoke/release
 TIMEOUT=1200
@@ -119,7 +120,7 @@ declare -A pass fail skip status
 for t in "${tests[@]}"; do
     case $t in
         phase2) args=("$BIN/explsmd") ;;
-        phase4) args=("$AGENT_BIN") ;;
+        phase4 | gui) args=("$AGENT_BIN") ;;
         *) args=("$BIN") ;;
     esac
     log=$LOGS/$t.log

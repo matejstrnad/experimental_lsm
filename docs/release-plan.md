@@ -147,9 +147,10 @@ agent per prompt, one at a time, with notifications as the fallback; the
 security picture (kept by explsmd, readable only by the agent and GUI
 exes, which share the agent identity); buttons armed 1.2 s after the
 window became active; and `explsm-gui settings` with the picture, the
-grants (revocable), the history of answers and the apps. Left to do: show
-the prompt only for the app in the foreground; a VM smoke test of the new
-D-Bus methods (`UserStatus`, `RevokeTemp`, `RevokeSaved`, `SetSecret`).
+grants (revocable), the history of answers and the apps. The windows are
+Wayland only: on X11 the agent keeps using notifications. The new D-Bus
+methods are tested in the VM by `tests/gui-smoke.sh`. Left to do: show the
+prompt only for the app in the foreground.
 
 Replace the desktop notifications with explsm's own dialog: the program, the
 data, a per-app history, and Allow once / Allow always / Deny. It is a

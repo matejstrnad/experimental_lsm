@@ -101,13 +101,15 @@ if [[ $BUILD -eq 1 ]]; then
     cd "$ROOT" || exit 2
     echo "== cargo build --release"
     cargo build --release || exit 2
-    # phase4's agent answers prompts by itself (`test-answer`): kept in a
-    # target dir of its own so target/release never holds one.
-    echo "== cargo build --release --features explsm-agent/test-answer (target/smoke)"
-    cargo build --release --target-dir "$ROOT/target/smoke" --features explsm-agent/test-answer || exit 2
+    # phase4's agent answers prompts by itself (`test-answer`), and gui's
+    # explsm-gui calls explsmd from the command line (`test-cli`): kept in a
+    # target dir of their own so target/release never holds one.
+    echo "== cargo build --release --features explsm-agent/test-answer,explsm-gui/test-cli (target/smoke)"
+    cargo build --release --target-dir "$ROOT/target/smoke" \
+        --features explsm-agent/test-answer,explsm-gui/test-cli || exit 2
     # Cargo leaves a binary whose crates did not change as it was; the
     # tests take one older than any source for a stale build.
-    for b in explsmd explsmctl explsm-agent; do
+    for b in explsmd explsmctl explsm-agent explsm-gui; do
         touch "$ROOT/target/release/$b" "$ROOT/target/smoke/release/$b"
     done
 fi
