@@ -75,8 +75,10 @@ pub struct Desk {
     new_folders: Vec<NewFolder>,
     /// Answered prompts per user, newest last. Not kept across restarts.
     history: HashMap<u32, VecDeque<HistoryEntry>>,
-    /// One file per uid with the user's [`Secret`].
-    secrets_dir: PathBuf,
+    /// Where each user's [`Secret`] is kept, as `secret-<uid>`: right in
+    /// the state directory, as the sandbox lets the daemon make files
+    /// there but no directories.
+    state_dir: PathBuf,
 }
 
 /// What an answer did, beyond the grant.
@@ -90,7 +92,7 @@ impl Desk {
         conn: Option<Connection>,
         exits: mpsc::UnboundedSender<(u32, OwnedFd)>,
         declined_file: PathBuf,
-        secrets_dir: PathBuf,
+        state_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
@@ -101,7 +103,7 @@ impl Desk {
             declined_file,
             new_folders: Vec::new(),
             history: HashMap::new(),
-            secrets_dir,
+            state_dir,
         }
     }
 
@@ -270,7 +272,7 @@ impl Desk {
     }
 
     fn secret_file(&self, uid: u32) -> PathBuf {
-        self.secrets_dir.join(uid.to_string())
+        self.state_dir.join(format!("secret-{uid}"))
     }
 
     /// User `uid`'s secret: the icon on the first line, the phrase on the
@@ -669,7 +671,7 @@ impl Desk {
 }
 
 /// Write `text` to `path`, readable by root only.
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }

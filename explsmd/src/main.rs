@@ -580,7 +580,7 @@ async fn main() -> Result<()> {
         bus.clone(),
         exit_tx,
         cli.state_dir.join("declined-claims"),
-        cli.state_dir.join("secrets"),
+        cli.state_dir.clone(),
     );
     let mut quiet = quiet::Quiet::new(Duration::from_secs(cli.quiet_window));
     eprintln!(

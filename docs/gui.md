@@ -41,7 +41,7 @@ none. What the dialog does about it:
 
 - **Security picture.** In explsm Settings you pick a picture and a phrase.
   Every dialog shows them. explsmd keeps them in
-  `/var/lib/explsm/secrets/<uid>` (root only) and hands them only to
+  `/var/lib/explsm/secret-<uid>` (root only) and hands them only to
   processes running the agent or GUI exe, which get the agent's identity
   (`explsmd --gui`, default `/usr/libexec/explsm-gui`), so another program
   of yours can't read them, ptrace the dialog or read its memory. A window

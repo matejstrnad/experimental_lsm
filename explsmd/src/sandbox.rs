@@ -275,6 +275,10 @@ mod tests {
         let ids = dir.join("state/ids");
         fs::write(ids.with_extension("new"), "a\n").unwrap();
         fs::rename(ids.with_extension("new"), &ids).unwrap();
+        // The users' security pictures, right in the state directory: it
+        // can't have directories made in it.
+        crate::desk::write_private(&dir.join("state/secret-1000"), "x\n").unwrap();
+        assert!(denied(fs::create_dir(dir.join("state/sub"))));
         assert!(denied(fs::write(dir.join("other/new"), "")));
         assert!(denied(fs::remove_file(dir.join("other/secret"))));
         assert!(denied(fs::write(dir.join("policy.d/b.explsm"), "")));

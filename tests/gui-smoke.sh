@@ -114,7 +114,8 @@ wait_log attached || { echo "explsmd did not start:"; cat "$ERR"; exit 1; }
 # --- who may call ---------------------------------------------------------------
 out=$(nobody busctl call org.explsm.Daemon1 /org/explsm/Daemon1 \
     org.explsm.AgentManager1 UserStatus 2>&1); rc=$?
-[[ $rc -ne 0 ]] && grep -q "only explsm-agent and explsm-gui" <<< "$out"
+# busctl shows an AccessDenied error by its name, not its message.
+[[ $rc -ne 0 ]] && grep -qiE "access denied|only explsm-agent and explsm-gui" <<< "$out"
 check "a process that is not the GUI can't read the user status" $? "rc=$rc $out"
 
 out=$(nobody "$FB/explsm-gui" test status 2>&1); rc=$?
@@ -139,7 +140,7 @@ pic=$(gui status | json 's["secret"]["icon"] + "/" + s["secret"]["phrase"]' 2>&1
 [[ $rc -eq 0 && $pic == "weather-clear-night-symbolic/blue horse" ]]
 check "the GUI sets the picture and reads it back" $? "rc=$rc $out pic=$pic"
 
-f=$DIR/state/secrets/65534
+f=$DIR/state/secret-65534
 mode=$(stat -c '%a %U' "$f" 2>&1)
 nobody cat "$f" > /dev/null 2>&1; rc=$?
 [[ $mode == "600 root" && $rc -ne 0 ]]
