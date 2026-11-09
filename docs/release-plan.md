@@ -142,6 +142,15 @@ Left to do:
 
 ## 6. Feature: own GUI for prompts
 
+Done (2026-11-09), see `docs/gui.md`: `explsm-gui prompt`, started by the
+agent per prompt, one at a time, with notifications as the fallback; the
+security picture (kept by explsmd, readable only by the agent and GUI
+exes, which share the agent identity); buttons armed 1.2 s after the
+window became active; and `explsm-gui settings` with the picture, the
+grants (revocable), the history of answers and the apps. Left to do: show
+the prompt only for the app in the foreground; a VM smoke test of the new
+D-Bus methods (`UserStatus`, `RevokeTemp`, `RevokeSaved`, `SetSecret`).
+
 Replace the desktop notifications with explsm's own dialog: the program, the
 data, a per-app history, and Allow once / Allow always / Deny. It is a
 security prompt, so:
@@ -171,6 +180,9 @@ explsmd already runs without an agent (denials are only logged), and
 to a desktop is the packaging and some defaults.
 
 Packaging:
+
+Done (2026-11-09): `packaging/build-deb.sh` builds `explsm` and
+`explsm-desktop`.
 
 - Split the `.deb`: **`explsm`** (explsmd, explsmctl, the system unit, the
   D-Bus policy, docs) and **`explsm-desktop`** (explsm-agent, its user unit,

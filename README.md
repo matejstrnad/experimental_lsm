@@ -76,11 +76,14 @@ explsmctl check /etc/explsm/policy.d --resolve
 
 ## Installing
 
-Build the package (needs Rust, clang and `dpkg-deb`) and install it:
+Build the packages (needs Rust, clang, `dpkg-deb`, and `libgtk-4-dev
+libadwaita-1-dev` for the GUI) and install them. `explsm` is all a server
+needs; `explsm-desktop` adds the prompts and the settings window for
+graphical sessions:
 
 ```bash
-packaging/build-deb.sh                 # prints target/deb/explsm_<version>_<arch>.deb
-sudo apt install ./target/deb/explsm_*.deb
+packaging/build-deb.sh                 # prints the paths of both packages
+sudo apt install ./target/deb/explsm_*.deb ./target/deb/explsm-desktop_*.deb
 systemctl --user start explsm-agent    # in sessions that were open already
 ```
 
@@ -91,7 +94,8 @@ It installs:
 | `/usr/sbin/explsmd` | the daemon, `explsmd.service`, enabled at boot |
 | `explsm-gate.service` | holds logins until explsmd runs, with `fail_closed on` |
 | `/usr/bin/explsmctl` | the CLI |
-| `/usr/libexec/explsm-agent` | the prompt agent, a user service in every graphical session |
+| `/usr/libexec/explsm-agent` | the prompt agent, a user service in every graphical session (`explsm-desktop`) |
+| `/usr/libexec/explsm-gui` | the prompt dialog and the explsm Settings window (`explsm-desktop`) |
 | `/etc/explsm/policy.d/` | the policy, **empty**: put your `*.explsm` files here |
 | `/usr/share/doc/explsm/` | these docs and `examples/ssh.explsm` |
 
@@ -162,8 +166,10 @@ had fsuid 0 and the root bypass is in audit mode (see below).
 
 ## Prompts
 
-With `explsm-agent` running in your session, a denial in enforce mode shows a
-notification. The access has already failed (BPF can't wait for an answer),
+With `explsm-agent` running in your session, a denial in enforce mode shows
+explsm's prompt dialog, with the security picture you chose in explsm Settings
+(or a notification where the dialog can't be shown; see
+[docs/gui.md](docs/gui.md)). The access has already failed (BPF can't wait for an answer),
 so retry after answering:
 
 - **Allow this process**: until the process that was denied exits.

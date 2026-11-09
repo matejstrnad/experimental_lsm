@@ -92,7 +92,10 @@ whatever the policy explicitly grants.
   agent of the prompt's user. Like an app in enforce mode (always, whatever
   the policy), the agent can't be ptraced, started with `LD_PRELOAD` as the
   agent, or replaced. Malware can run the real agent, but that only shows the
-  user real prompts. The agent's `--answer` (answer every prompt without
+  user real prompts. `explsm-gui` (the prompt dialog and settings window)
+  has the agent's identity too, and so may read the user's security picture
+  and prompt history from explsmd; it clears its environment before GTK
+  starts (see [gui.md](gui.md)). The agent's `--answer` (answer every prompt without
   asking) only exists in builds with the `test-answer` feature, which must
   never be installed.
 - **Tamper protection covers the loader and ptrace, not every way of

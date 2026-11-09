@@ -1,0 +1,110 @@
+# The GUI
+
+explsm's desktop parts are in the `explsm-desktop` package: `explsm-agent`,
+a user service in each graphical session, and `explsm-gui`, a GTK4 /
+libadwaita program with two windows. Servers install `explsm` only and pull
+in nothing graphical.
+
+## The prompt dialog
+
+For each prompt of explsmd, the agent starts `explsm-gui prompt`, writes the
+prompt to its stdin as JSON and reads the answer from its stdout. One dialog
+is shown at a time; later prompts wait. The dialog shows:
+
+- your **security picture** (below),
+- what is asked: the program, whose data, the file and the permissions, or
+  the new folder,
+- the warning explsmd attached (an exe you can change, an interpreter),
+- your earlier answers about the same program and data,
+- one button per answer explsmd offers.
+
+Closing the window or pressing Escape answers nothing: the access stays
+denied. If the dialog crashes, nothing is answered either; the agent keeps
+the logic and the D-Bus link to explsmd, so a broken UI can't answer for
+you. The dialog exits with code 3 when it can't open a window at all (no
+display, GTK fails); the agent then shows the prompt as a notification, as
+it does when `explsm-gui` is not installed or there is no `WAYLAND_DISPLAY`
+or `DISPLAY`. `explsm-agent --no-gui` uses notifications only.
+
+## Against fake and hijacked prompts
+
+A prompt that can be faked or clicked by another program is worse than
+none. What the dialog does about it:
+
+- **Security picture.** In explsm Settings you pick a picture and a phrase.
+  Every dialog shows them. explsmd keeps them in
+  `/var/lib/explsm/secrets/<uid>` (root only) and hands them only to
+  processes running the agent or GUI exe, which get the agent's identity
+  (`explsmd --gui`, default `/usr/libexec/explsm-gui`), so another program
+  of yours can't read them, ptrace the dialog or read its memory. A window
+  without your picture is not explsm's: answer nothing.
+- **Delayed buttons.** The buttons work only once the window has been
+  active (focused) for 1.2 seconds, and stop working when it loses focus. A
+  click or key press meant for another window can't land on a dialog that
+  just popped up, and no button is the default for Enter.
+- **A clean environment.** `explsm-gui` drops every environment variable
+  but those that name the display, the session bus and the language before
+  GTK starts: GLib, GTK and Mesa load code named by variables such as
+  `GIO_EXTRA_MODULES`, `GDK_PIXBUF_MODULE_FILE` or `LIBGL_DRIVERS_PATH`,
+  which would run with the agent's identity.
+- **No single instance.** The windows don't register as unique GApplications
+  on the session bus: any program could own that name first and get the
+  activation instead.
+
+What it does not do (yet):
+
+- On **X11** any client can read the screen (and so the picture, while a
+  dialog shows it) and send synthetic clicks. Use Wayland.
+- On Wayland a program can still draw a window that looks like the dialog;
+  the picture is what tells them apart, so it only helps if you look at it.
+- It does not check that the denied program is the one in the foreground.
+- GTK still reads your theme and `~/.config/gtk-4.0/gtk.css`, which other
+  programs of yours can write: they can restyle the dialog, though not read
+  your picture.
+
+## explsm Settings
+
+`explsm-gui settings` (the "explsm Settings" entry in your app list) has
+four pages:
+
+- **Picture**: choose the security picture and phrase.
+- **Grants**: the grants you gave through prompts. Grants until the process
+  exits or until logout can be revoked at once; "Always" grants are taken
+  out of `/etc/explsm/claims.d/<you>.explsm` and the policy is reloaded (if
+  it does not load without them, the file is put back). Folders you chose
+  to protect are listed, but only an administrator can take them back:
+  doing that unprotects data.
+- **History**: your answers since explsmd started (the last 200; not kept
+  across restarts).
+- **Apps**: the apps of the policy, their mode, exes and data.
+
+## D-Bus
+
+The GUI uses these methods of `org.explsm.AgentManager1` (see
+`explsm-ipc`). explsmd answers them only for processes running the agent or
+GUI exe, and only about the caller's own user:
+
+| Method | |
+|---|---|
+| `UserStatus() → UserStatus` | apps, your temporary and saved grants, your claims, history, picture |
+| `RevokeTemp(subject, owner) → u` | end your grants until exit or logout of `subject` to `owner` |
+| `RevokeSaved(subject, owner)` | remove your saved grant of `subject` to `owner`, and reload |
+| `SetSecret(Secret)` | set your picture and phrase |
+
+Revoking only ever takes access away. Removing a `claim` is not offered.
+
+## Trying it out
+
+`--preview FILE` reads the user status from a JSON file instead of asking
+explsmd, e.g.:
+
+```bash
+cargo run -p explsm-gui -- settings --preview explsm-gui/examples/preview.json
+echo '{"id":1,"kind":"access","subject":"/usr/bin/rg","process":"rg (pid 7)","owner":"ssh",
+  "perms":["read"],"path":"/home/me/.ssh/id_ed25519","warning":"",
+  "choices":["allow-session","deny"]}' |
+  cargo run -p explsm-gui -- prompt --preview explsm-gui/examples/preview.json
+```
+
+Building needs the GTK 4 (≥ 4.14) and libadwaita (≥ 1.5) development files
+(`libgtk-4-dev libadwaita-1-dev`).
