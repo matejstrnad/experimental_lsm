@@ -690,8 +690,8 @@ static __always_inline u32 action_for(app_id owner, u32 lacking)
 	return enforcing(owner) ? ACTION_DENY : ACTION_AUDIT;
 }
 
-/* Count a reported operation and return the hook result: err if denied. */
-/* The result of a check: -err if action is a denial. */
+/* Count a reported operation and return the hook result: -err if action is
+ * a denial. */
 static __always_inline int outcome(u32 action, int err)
 {
 	if (action == ACTION_DENY) {
@@ -998,7 +998,8 @@ static __attribute__((noinline)) u32 tainted_env(struct linux_binprm *bprm,
 	return s.found;
 }
 
-/* Most arguments of an exec checked against DENY_ARGS. */
+/* Most arguments of an exec checked against DENY_ARGS; an exec with more
+ * counts as a match. */
 #define ARG_STEPS 1024
 
 struct arg_scan {
@@ -1022,8 +1023,11 @@ static long arg_step(u64 index, void *data)
 		return 1;
 	__builtin_memset(s->buf, 0, ENV_CHUNK);
 	long n = bpf_probe_read_user_str(s->buf, ENV_CHUNK, (void *)s->pos);
-	if (n <= 0)
+	/* Unreadable: counted as a match, so argv can't hide an argument. */
+	if (n <= 0) {
+		s->found = 1;
 		return 1;
+	}
 	/* The whole argument, for exact patterns. */
 	__builtin_memcpy(s->key.val, s->buf, ENV_CHUNK);
 	s->key.len = n;
@@ -1050,9 +1054,12 @@ static long arg_step(u64 index, void *data)
 		/* Skip the rest of a long argument. */
 		long m = bpf_probe_read_user_str(s->buf, ENV_CHUNK,
 						 (void *)(s->pos + ENV_CHUNK - 1));
-		/* Longer still: give up on the rest of argv. */
-		if (m <= 0 || m == ENV_CHUNK)
+		/* Longer still: no argument after it is checked, so it
+		 * counts as a match. */
+		if (m <= 0 || m == ENV_CHUNK) {
+			s->found = 1;
 			return 1;
+		}
 		s->pos += ENV_CHUNK - 1 + m;
 	} else {
 		s->pos += n;
@@ -1074,7 +1081,9 @@ static __attribute__((noinline)) int denied_arg(struct linux_binprm *bprm, app_i
 	if (lens)
 		s.lens = *lens;
 	bpf_loop(ARG_STEPS, arg_step, &s, 0);
-	return s.found;
+	/* Arguments left unchecked (too many, or past the end) count as a
+	 * match: the scan fails closed. */
+	return s.found || s.idx < s.argc;
 }
 
 /* Whether a task with identity spawner and task flags flags (before its
@@ -1195,11 +1204,11 @@ int LSM_PROG(bprm_committed_creds, struct linux_binprm *bprm)
 	if (app != APP_UNCONFINED && !why && (af & AF_DENY_ARGS) && denied_arg(bprm, app))
 		why = REASON_ARGS;
 	if (why) {
-		int deny = enforcing(app);
+		u32 action = action_for(app, 0);
 		struct event *ev = new_event(EV_EXEC, app, APP_UNCONFINED);
 		if (ev) {
 			ev->owner2 = spawner;
-			ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+			ev->action = action;
 			ev->reason = why;
 			ev->flags = prev_flags;
 			ev->file = key;
@@ -1208,8 +1217,9 @@ int LSM_PROG(bprm_committed_creds, struct linux_binprm *bprm)
 								 bprm->filename);
 			bpf_ringbuf_submit(ev, 0);
 		}
-		if (deny) {
-			bump(STAT_ENV_DROPPED);
+		/* Not refused: the exec goes on without the identity. */
+		outcome(action, 0);
+		if (action == ACTION_DENY) {
 			struct task_info *info = bpf_task_storage_get(
 				&TASKS, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
 			if (info) {
@@ -1310,7 +1320,9 @@ static __always_inline void probe_chain(struct ev_path *out, struct dentry *d)
 static __attribute__((noinline)) int code_check(u32 op, u64 fp)
 {
 	app_id subject = current_app();
-	if (subject == APP_UNCONFINED || subject >= OWNER_UNKNOWN)
+	/* The agent (and the GUI, which has its identity) is held to it too:
+	 * code planted in the user's folders must not run as the agent. */
+	if (subject == APP_UNCONFINED || subject == APP_DAEMON)
 		return 0;
 	if (app_flags(subject) & AF_CODE_ANY)
 		return 0;
@@ -1335,22 +1347,17 @@ static __attribute__((noinline)) int code_check(u32 op, u64 fp)
 	if ((w.owner & ~OWNER_EXE) == subject)
 		return 0;
 
-	int deny = enforcing(subject);
+	u32 action = action_for(subject, 0);
 	struct event *ev = new_event(EV_ACCESS, subject, w.owner);
 	if (ev) {
 		ev->op = op;
-		ev->action = deny ? ACTION_DENY : ACTION_AUDIT;
+		ev->action = action;
 		ev->reason = REASON_CODE;
 		positive_key(d, &ev->file);
 		probe_chain(&ev->path, d);
 		bpf_ringbuf_submit(ev, 0);
 	}
-	if (deny) {
-		bump(STAT_DENIED);
-		return ERR(EACCES);
-	}
-	bump(STAT_AUDITED);
-	return 0;
+	return outcome(action, EACCES);
 }
 
 /* The file argument is read from the context as a number: NULL for an

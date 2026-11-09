@@ -229,6 +229,9 @@ app ssh {
 
 - `*` is only allowed at the end; there are no other globs.
 - At most 126 bytes a pattern, and 256 patterns in all apps.
+- An exec whose arguments can't all be checked counts as a match: one
+  argument longer than 254 bytes, more than 1024 arguments, or arguments
+  that can't be read.
 
 This is a backstop, and easy to get around: another spelling (case,
 `-o PKCS11Provider=…` as two arguments, which is why `PKCS11Provider*` is
