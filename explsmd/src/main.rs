@@ -582,11 +582,13 @@ async fn main() -> Result<()> {
     // set up.
     let mut sandboxed = cli.no_landlock.then_some("not sandboxed (--no-landlock)");
     if !cli.no_landlock {
+        let hashed = state.pin_read_paths();
         let paths = sandbox::Paths {
             policy: &cli.policy,
             claims: &cli.claims,
             state_dir: &cli.state_dir,
             pin_dir: &pins.dir,
+            hashed: &hashed,
         };
         let refused = match sandbox::restrict(&paths) {
             Ok(status) if status.enforced || !requires.sandbox => {

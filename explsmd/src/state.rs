@@ -1195,6 +1195,28 @@ impl State {
         Ok(())
     }
 
+    /// What the sandbox must let the daemon read to hash pinned exes: the
+    /// folders their paths are in, and the hash lists. Pins a later
+    /// reload adds outside these are refused (their files can't be read).
+    pub fn pin_read_paths(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for app in &self.policy.apps {
+            for (text, pin) in &app.pins {
+                for pat in app.exes.iter().filter(|p| &p.text == text) {
+                    for path in pat.expand(&self.users) {
+                        if let Some(dir) = path.parent() {
+                            out.push(dir.to_path_buf());
+                        }
+                    }
+                }
+                out.extend(pin.lists.iter().cloned());
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Give running processes below a terminal the terminal flag.
     pub fn seed_terminals(&self) -> Result<()> {
         let tasks = self.tasks()?;

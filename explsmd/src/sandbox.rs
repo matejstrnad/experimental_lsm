@@ -12,7 +12,8 @@
 //! - reading the policy, the claims, the state directory, `/etc/passwd`,
 //!   `/etc/login.defs`, the CPU lists in `/sys` and `/proc` (other
 //!   processes' `exe`, `environ` and
-//!   `ns` only through `procs.rs`);
+//!   `ns` only through `procs.rs`), and the folders of hash-pinned exes and
+//!   their hash lists, to hash them;
 //! - writing claims and state, and removing the pins (unload).
 //!
 //! Everything else is refused: reading other files, writing anywhere else,
@@ -24,7 +25,10 @@
 //! contains bugs; it does not stop code running in the daemon, which could
 //! load BPF programs of its own.
 
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, Result};
 use landlock::{
@@ -41,6 +45,8 @@ pub struct Paths<'a> {
     pub claims: &'a Path,
     pub state_dir: &'a Path,
     pub pin_dir: &'a Path,
+    /// Folders of pinned exes and hash lists, read to hash them.
+    pub hashed: &'a [PathBuf],
 }
 
 /// How much of the sandbox the kernel enforces.
@@ -96,6 +102,7 @@ pub fn restrict(paths: &Paths) -> Result<Status> {
         (paths.state_dir, write),
         (paths.pin_dir, AccessFs::RemoveFile.into()),
     ];
+    rules.extend(paths.hashed.iter().map(|p| (p.as_path(), read)));
     // Unloading removes the pin directory itself.
     if let Some(parent) = paths.pin_dir.parent() {
         rules.push((parent, AccessFs::RemoveDir.into()));
@@ -209,6 +216,7 @@ mod tests {
             claims: &dir.join("claims.d"),
             state_dir: &dir.join("state"),
             pin_dir: &dir.join("pins"),
+            hashed: &[],
         })
         .unwrap();
         assert_eq!(status.enforced, available());
