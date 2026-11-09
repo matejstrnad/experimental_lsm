@@ -157,7 +157,8 @@ whatever the policy explicitly grants.
   which the program chooses. The agent takes a button press only from the
   owner of `org.freedesktop.Notifications` (zbus filters signals by sender),
   but on X11 any client of the user can synthesize the click; Wayland
-  sessions don't allow that.
+  sessions don't allow that. explsm's own prompt dialog therefore only
+  opens on Wayland; on X11 prompts stay notifications.
 - **"Always allow" grants are not per user.** A grant written for one user's
   prompt applies to the same app's data of every user.
 - **`@terminal` can be spoofed** by same-user malware that spawns a terminal

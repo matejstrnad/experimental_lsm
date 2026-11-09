@@ -167,8 +167,9 @@ had fsuid 0 and the root bypass is in audit mode (see below).
 ## Prompts
 
 With `explsm-agent` running in your session, a denial in enforce mode shows
-explsm's prompt dialog, with the security picture you chose in explsm Settings
-(or a notification where the dialog can't be shown; see
+explsm's prompt dialog, with the security picture you chose in explsm Settings.
+The dialog and the settings window need a Wayland session; on X11, or where
+the dialog can't be shown, the prompt is a notification (see
 [docs/gui.md](docs/gui.md)). The access has already failed (BPF can't wait for an answer),
 so retry after answering:
 

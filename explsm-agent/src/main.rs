@@ -9,8 +9,8 @@
 //! (see `explsm-gui`), one at a time: the agent writes the prompt to its
 //! stdin and reads the answer from its stdout. A dialog closed without an
 //! answer, or one that crashes, changes nothing (the access stays denied).
-//! Where the dialog can't be shown (it is not installed, there is no
-//! display, GTK fails to start), the prompt becomes a notification on the
+//! Where the dialog can't be shown (it is not installed, the session is not
+//! Wayland, GTK fails to start), the prompt becomes a notification on the
 //! session bus with one button per answer instead. When explsmd restarts,
 //! the agent registers again.
 //!
@@ -238,13 +238,11 @@ struct Dialogs {
 }
 
 impl Dialogs {
-    /// Whether a dialog can be tried at all: it is installed and there is a
-    /// display.
+    /// Whether a dialog can be tried at all: it is installed and the
+    /// session is Wayland. On X11 any program could read the dialog (and
+    /// the security picture in it) and click its buttons.
     fn usable(&self) -> bool {
-        self.exe.is_file()
-            && ["WAYLAND_DISPLAY", "DISPLAY"]
-                .iter()
-                .any(|v| std::env::var_os(v).is_some_and(|d| !d.is_empty()))
+        self.exe.is_file() && wayland(std::env::var_os("WAYLAND_DISPLAY").as_deref())
     }
 
     /// Show the next waiting prompt if none is shown. A prompt whose dialog
@@ -279,6 +277,11 @@ impl Dialogs {
         self.queue.clear();
         self.current = None;
     }
+}
+
+/// Whether `WAYLAND_DISPLAY` names a Wayland display.
+fn wayland(display: Option<&std::ffi::OsStr>) -> bool {
+    display.is_some_and(|d| !d.is_empty())
 }
 
 /// Start the dialog for `info`; what it ends with is sent on `done`.
@@ -478,7 +481,7 @@ async fn main() -> Result<()> {
     let use_dialog = !cli.no_gui && cli.answer().is_none();
     if use_dialog && !dialogs.usable() {
         eprintln!(
-            "explsm-agent: {} or a display is missing; prompts are notifications",
+            "explsm-agent: {} is missing or this is not a Wayland session; prompts are notifications",
             cli.gui.display()
         );
     }
@@ -657,6 +660,13 @@ mod tests {
             Shown::of(ExitStatus::from_raw(9), "deny"),
             Shown::Failed(_)
         ));
+    }
+
+    #[test]
+    fn dialogs_need_wayland() {
+        assert!(wayland(Some("wayland-0".as_ref())));
+        assert!(!wayland(Some("".as_ref())));
+        assert!(!wayland(None));
     }
 
     #[tokio::test]

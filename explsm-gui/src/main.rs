@@ -10,6 +10,12 @@
 //!   the security picture, the grants given through prompts (and revoking
 //!   them), the history of answers and the apps.
 //!
+//! Both need **Wayland**. On X11 any client can read the screen (and with
+//! it the security picture) and send clicks to any window, which no dialog
+//! can defend against; there the windows don't open, and the agent shows
+//! notifications instead. GTK is held to its Wayland backend, so it can't
+//! fall back to X11 through Xwayland either.
+//!
 //! explsmd gives this exe the agent's identity (`--gui`), so no other
 //! process of the user can ptrace it, and only it and the agent may read the
 //! user's security picture and history from explsmd.
@@ -22,11 +28,18 @@
 //!
 //! `--preview FILE` reads the [`UserStatus`] from a JSON file instead of
 //! asking explsmd, to try the windows out without a running daemon.
+//!
+//! Built with the `test-cli` feature (smoke tests only), `explsm-gui test
+//! …` calls explsmd's GUI methods from the command line (see `test_cli.rs`).
+//! An installed GUI must not have it: any process of the user could run it
+//! and read the user's security picture.
 
 mod daemon;
 mod prompt;
 mod secret;
 mod settings;
+#[cfg(feature = "test-cli")]
+mod test_cli;
 
 use std::{io::Read as _, path::PathBuf, process::ExitCode};
 
@@ -56,9 +69,7 @@ impl Source {
 /// The variables kept, by name or prefix (ending in `_`): enough to reach
 /// the display, the session bus and the user's language.
 const KEPT_ENV: &[&str] = &[
-    "DISPLAY",
     "WAYLAND_DISPLAY",
-    "XAUTHORITY",
     "XDG_RUNTIME_DIR",
     "XDG_SESSION_TYPE",
     "XDG_CURRENT_DESKTOP",
@@ -82,7 +93,7 @@ fn kept(name: &str) -> bool {
     })
 }
 
-/// Drop every variable not in [`KEPT_ENV`].
+/// Drop every variable not in [`KEPT_ENV`], and hold GTK to Wayland.
 fn clean_env() {
     let dropped: Vec<_> = std::env::vars_os()
         .map(|(k, _)| k)
@@ -93,7 +104,22 @@ fn clean_env() {
         unsafe { std::env::remove_var(k) };
     }
     // SAFETY: as above.
-    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+    unsafe {
+        std::env::set_var("PATH", "/usr/bin:/bin");
+        std::env::set_var("GDK_BACKEND", "wayland");
+    }
+}
+
+/// Start GTK, on Wayland only.
+fn start_gtk() -> Result<(), String> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none_or(|d| d.is_empty()) {
+        return Err(
+            "explsm's windows need a Wayland session: on X11 any program \
+                    can read them and click them"
+                .into(),
+        );
+    }
+    gtk::init().map_err(|e| format!("can't show a window: {e}"))
 }
 
 fn usage() -> ExitCode {
@@ -107,6 +133,10 @@ fn main() -> ExitCode {
     let Some(mode) = args.next() else {
         return usage();
     };
+    #[cfg(feature = "test-cli")]
+    if mode == "test" {
+        return test_cli::run(args.collect());
+    }
     let mut source = Source::Daemon;
     while let Some(a) = args.next() {
         match (a.as_str(), args.next()) {
@@ -128,8 +158,8 @@ fn main() -> ExitCode {
                     return ExitCode::from(dialog::UNAVAILABLE as u8);
                 }
             };
-            if let Err(e) = gtk::init() {
-                eprintln!("explsm-gui: can't show a window: {e}");
+            if let Err(e) = start_gtk() {
+                eprintln!("explsm-gui: {e}");
                 return ExitCode::from(dialog::UNAVAILABLE as u8);
             }
             match prompt::run(info, source) {
@@ -141,8 +171,8 @@ fn main() -> ExitCode {
             }
         }
         "settings" => {
-            if let Err(e) = gtk::init() {
-                eprintln!("explsm-gui: can't show a window: {e}");
+            if let Err(e) = start_gtk() {
+                eprintln!("explsm-gui: {e}");
                 return ExitCode::FAILURE;
             }
             settings::run(source);
@@ -158,17 +188,14 @@ mod tests {
 
     #[test]
     fn keeps_only_the_session() {
-        for k in [
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "LC_ALL",
-            "LC_MESSAGES",
-            "HOME",
-        ] {
+        for k in ["WAYLAND_DISPLAY", "LC_ALL", "LC_MESSAGES", "HOME"] {
             assert!(kept(k), "{k}");
         }
         for k in [
             "GIO_EXTRA_MODULES",
+            "DISPLAY",
+            "XAUTHORITY",
+            "GDK_BACKEND",
             "GDK_PIXBUF_MODULE_FILE",
             "LIBGL_DRIVERS_PATH",
             "GTK_MODULES",
