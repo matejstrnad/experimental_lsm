@@ -221,14 +221,22 @@ fn replaceable(path: &Path) -> Option<PathBuf> {
         chains.push(real);
     }
     for chain in chains {
+        // Of the entry below p: in a sticky directory (`/tmp`, `/var/tmp`)
+        // only its owner and the directory's may rename or remove it.
+        let mut below_is_roots = false;
         for p in chain.ancestors() {
             let Ok(md) = fs::symlink_metadata(p) else {
+                below_is_roots = false;
                 continue;
             };
-            let mode_writable = !md.file_type().is_symlink() && md.mode() & 0o022 != 0;
+            let sticky = md.is_dir() && md.mode() & 0o1000 != 0;
+            let mode_writable = !md.file_type().is_symlink()
+                && md.mode() & 0o022 != 0
+                && !(sticky && below_is_roots);
             if md.uid() != 0 || mode_writable {
                 return Some(p.to_path_buf());
             }
+            below_is_roots = true;
         }
     }
     None
@@ -354,7 +362,7 @@ fn watch(out: &mut Resolved, dir: &Path, pattern: String) {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use super::*;
     use crate::{IdTable, Sources, check};
@@ -393,6 +401,8 @@ mod tests {
     fn env_paths_a_user_could_replace() {
         let t = TempDir::new("env");
         let d = &t.0;
+        // Writable by others (and not sticky): its entries are replaceable.
+        fs::set_permissions(d, fs::Permissions::from_mode(0o777)).unwrap();
         fs::write(d.join("lib.so"), "").unwrap();
         let p = policy(&format!(
             r#"app a {{ exe "/a" env "LD_PRELOAD=/usr", "LD_LIBRARY_PATH=/usr/lib:{d}/lib.so" }}"#,
@@ -406,9 +416,28 @@ mod tests {
     }
 
     #[test]
+    fn root_entries_in_sticky_directories() {
+        let t = TempDir::new("sticky");
+        let d = &t.0;
+        fs::create_dir(d.join("sticky")).unwrap();
+        fs::set_permissions(d.join("sticky"), fs::Permissions::from_mode(0o1777)).unwrap();
+        fs::create_dir(d.join("sticky/mine")).unwrap();
+        fs::set_permissions(d.join("sticky/mine"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir(d.join("open")).unwrap();
+        fs::set_permissions(d.join("open"), fs::Permissions::from_mode(0o777)).unwrap();
+        // The temp dir itself is under /tmp: start below it.
+        let below = |p: &Path| replaceable(p).filter(|bad| bad.starts_with(d));
+        if fs::metadata(d).unwrap().uid() == 0 {
+            assert_eq!(below(&d.join("sticky/mine")), None);
+            assert_eq!(below(&d.join("open/x")), Some(d.join("open")));
+        }
+    }
+
+    #[test]
     fn pinned_exes() {
         let t = TempDir::new("pins");
         let d = &t.0;
+        fs::set_permissions(d, fs::Permissions::from_mode(0o777)).unwrap();
         fs::write(d.join("v1"), "good").unwrap();
         fs::write(d.join("v2"), "evil").unwrap();
         let good = sha256_file(&d.join("v1")).unwrap();
